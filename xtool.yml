@@ -1,0 +1,4 @@
+version: 1
+bundleID: com.regis.j6handset
+product: J6Handset
+infoPath: Info.plist

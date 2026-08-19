@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Cellular</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Cellular uses the microphone to send your voice during calls.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Cellular exchanges live call audio with your relay over the local Wi-Fi network.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Cellular uses Bluetooth for call signaling and call controls.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>bluetooth-central</string>
+		<string>voip</string>
+	</array>
+	<key>NSContactsUsageDescription</key>
+	<string>Cellular uses your contacts to show caller names and contact photos.</string>
+</dict>
+</plist>
