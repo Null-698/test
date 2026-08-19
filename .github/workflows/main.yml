@@ -1,0 +1,50 @@
+name: iOS xtool build (one-off)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/ci-once-trigger
+
+permissions:
+  contents: read
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Apple toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+          xcrun -sdk iphoneos -show-sdk-path
+
+      - name: Install xtool
+        run: |
+          brew install xtool-org/tap/xtool
+          xtool --help | head -40
+
+      - name: Build unsigned IPA
+        run: |
+          set -o pipefail
+          xtool dev build --ipa 2>&1 | tee xtool-build.log
+          echo "Built IPA(s):"
+          find "$GITHUB_WORKSPACE" -type f -name '*.ipa' -print
+
+      - name: Upload IPA and build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cellular-xtool-build-${{ github.run_number }}
+          path: |
+            **/*.ipa
+            xtool-build.log
+          if-no-files-found: warn
+          retention-days: 3
