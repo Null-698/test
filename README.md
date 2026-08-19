@@ -638,3 +638,29 @@ Removed the deprecated `.allowBluetooth` fallback. The call audio session now
 uses `.allowBluetoothHFP` directly for two-way AirPods/Bluetooth call audio.
 
 No routing behavior change intended; this only removes the compiler warning.
+
+
+## DIALING -> ACTIVE answer handoff smoothing
+
+This revision changes ONLY the answer-time downlink transition.
+
+When the J6 downlink sender session changes from outgoing DIALING/ringback to
+ACTIVE/full-duplex:
+
+1. the current ringback tail is faded down over about 8 ms;
+2. old scheduled ringback is stopped/flushed;
+3. the new ACTIVE sender session is rebuffered normally;
+4. the first 20 ms of ACTIVE audio is faded in.
+
+This smoothing is not used during normal steady-state conversation and does
+not change:
+- the normal jitter target;
+- PLC behavior;
+- clock recovery;
+- AirPods/HFP routing;
+- BLE/CallKit/Contacts;
+- the J6 Android side;
+- the J6A1 UDP wire format.
+
+The intent is only to remove the click/buzz/distorted burst at the exact
+DIALING -> ACTIVE transition.

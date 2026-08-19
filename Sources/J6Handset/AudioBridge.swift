@@ -59,6 +59,11 @@ final class AudioBridge {
     private var pendingPlaybackOutput: AudioJitterBuffer.Output?
     private var remoteSessionID: UInt32?
 
+    // One-shot smoothing used only when the J6 downlink sender session changes
+    // (DIALING ringback -> ACTIVE full-duplex conversation).
+    private var streamStartFadeFramesRemaining = 0
+    private let streamStartFadeFrameCount = 2   // 20 ms total
+
     private var playbackFormat: AVAudioFormat?
 
     private var micRMS = 0
@@ -254,6 +259,7 @@ final class AudioBridge {
             scheduledBuffers = 0
             pendingPlaybackOutput = nil
             remoteSessionID = nil
+            streamStartFadeFramesRemaining = 0
         }
     }
 
@@ -264,6 +270,7 @@ final class AudioBridge {
             scheduledBuffers = 0
             pendingPlaybackOutput = nil
             remoteSessionID = nil
+            streamStartFadeFramesRemaining = 0
 
             micInputSamples.removeAll()
             micPacketSamples.removeAll()
@@ -314,10 +321,18 @@ final class AudioBridge {
 
             if streamChanged {
                 // DIALING ringback and ACTIVE speech have different sender
-                // sessions. Flush scheduled ringback before live speech.
-                self.player.stop()
-                self.scheduledBuffers = 0
-                self.pendingPlaybackOutput = nil
+                // sessions. Smooth only this handoff:
+                //
+                // 1) fade the already-playing ringback tail down over ~8 ms;
+                // 2) stop/flush old scheduled ringback;
+                // 3) rebuffer the new ACTIVE stream;
+                // 4) fade the first 20 ms of ACTIVE speech in.
+                //
+                // This is deliberately NOT used during normal steady-state
+                // packet loss/rebuffering.
+                self.fadeOutAndFlushForStreamChange()
+                self.streamStartFadeFramesRemaining =
+                    self.streamStartFadeFrameCount
             }
 
             self.remoteSessionID = packet.sessionID
@@ -492,6 +507,39 @@ final class AudioBridge {
         }
     }
 
+    private func fadeOutAndFlushForStreamChange() {
+        // AVAudioPlayerNode volume is a simple, local way to remove the
+        // discontinuity without touching the network/jitter design.
+        //
+        // We only have a few milliseconds here, so use a short stepped ramp
+        // on the audio queue. Then restore volume before scheduling ACTIVE.
+        if player.isPlaying {
+            let steps = 4
+            let startVolume = player.volume
+
+            for step in 1...steps {
+                let fraction =
+                    Float(steps - step) / Float(steps)
+                player.volume =
+                    max(0.0, startVolume * fraction)
+
+                // ~2 ms per step => ~8 ms total. This is intentionally tiny:
+                // enough to remove the hard discontinuity, not enough to feel
+                // like the call "ducks" when the other side answers.
+                usleep(2_000)
+            }
+        }
+
+        player.stop()
+        player.volume = 1.0
+        scheduledBuffers = 0
+        pendingPlaybackOutput = nil
+
+        // Clear only stale network/jitter state belonging to the old sender.
+        // The next pushed packet will seed the new session.
+        remoteJitter.reset()
+    }
+
     private func fillPlaybackSchedule() {
         guard running else { return }
 
@@ -533,6 +581,16 @@ final class AudioBridge {
                 continue
             }
 
+            if streamStartFadeFramesRemaining > 0 {
+                applyStreamStartFadeIn(
+                    to: buffer,
+                    frameIndex:
+                        streamStartFadeFrameCount
+                        - streamStartFadeFramesRemaining
+                )
+                streamStartFadeFramesRemaining -= 1
+            }
+
             pendingPlaybackOutput = next
             scheduledBuffers += 1
 
@@ -553,6 +611,36 @@ final class AudioBridge {
 
         if !player.isPlaying && scheduledBuffers > 0 {
             player.play()
+        }
+    }
+
+    private func applyStreamStartFadeIn(
+        to buffer: AVAudioPCMBuffer,
+        frameIndex: Int
+    ) {
+        guard let channel = buffer.floatChannelData?[0] else {
+            return
+        }
+
+        let count = Int(buffer.frameLength)
+        guard count > 0 else { return }
+
+        let totalSourceFrames =
+            max(1, streamStartFadeFrameCount)
+        let frameStart =
+            Double(frameIndex) / Double(totalSourceFrames)
+        let frameEnd =
+            Double(frameIndex + 1) / Double(totalSourceFrames)
+
+        for index in 0..<count {
+            let t =
+                Double(index) / Double(max(1, count - 1))
+            let gain =
+                frameStart + (frameEnd - frameStart) * t
+
+            channel[index] *= Float(
+                min(1.0, max(0.0, gain))
+            )
         }
     }
 
