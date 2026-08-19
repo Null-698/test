@@ -96,13 +96,9 @@ final class AudioBridge {
     func prepareAudioSession() throws {
         let session = AVAudioSession.sharedInstance()
 
-        var options: AVAudioSession.CategoryOptions = []
-
-        if #available(iOS 26.0, *) {
-            options.insert(.allowBluetoothHFP)
-        } else {
-            options.insert(.allowBluetooth)
-        }
+        let options: AVAudioSession.CategoryOptions = [
+            .allowBluetoothHFP
+        ]
 
         try session.setCategory(
             .playAndRecord,

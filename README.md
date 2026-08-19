@@ -630,3 +630,11 @@ An `Audio route` diagnostics row shows the actual input/output route during
 the call.
 
 No Android, BLE, UDP wire, jitter-buffer, Contacts, or caller-ID changes.
+
+
+## Bluetooth deprecation cleanup
+
+Removed the deprecated `.allowBluetooth` fallback. The call audio session now
+uses `.allowBluetoothHFP` directly for two-way AirPods/Bluetooth call audio.
+
+No routing behavior change intended; this only removes the compiler warning.
