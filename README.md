@@ -664,3 +664,18 @@ not change:
 
 The intent is only to remove the click/buzz/distorted burst at the exact
 DIALING -> ACTIVE transition.
+
+
+## Answer handoff: ACTIVE fade-in removed
+
+The first ACTIVE conversation audio is no longer faded in.
+
+Final handoff behavior:
+
+1. fade the DIALING/ringback tail down over about 8 ms;
+2. stop/flush old ringback buffers;
+3. rebuffer the new ACTIVE sender session;
+4. play ACTIVE speech immediately at full level.
+
+This keeps the anti-click ringback tail smoothing but avoids deliberately
+softening the first phoneme spoken immediately after answer.

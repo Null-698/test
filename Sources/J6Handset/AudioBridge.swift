@@ -59,10 +59,6 @@ final class AudioBridge {
     private var pendingPlaybackOutput: AudioJitterBuffer.Output?
     private var remoteSessionID: UInt32?
 
-    // One-shot smoothing used only when the J6 downlink sender session changes
-    // (DIALING ringback -> ACTIVE full-duplex conversation).
-    private var streamStartFadeFramesRemaining = 0
-    private let streamStartFadeFrameCount = 2   // 20 ms total
 
     private var playbackFormat: AVAudioFormat?
 
@@ -259,7 +255,6 @@ final class AudioBridge {
             scheduledBuffers = 0
             pendingPlaybackOutput = nil
             remoteSessionID = nil
-            streamStartFadeFramesRemaining = 0
         }
     }
 
@@ -270,7 +265,6 @@ final class AudioBridge {
             scheduledBuffers = 0
             pendingPlaybackOutput = nil
             remoteSessionID = nil
-            streamStartFadeFramesRemaining = 0
 
             micInputSamples.removeAll()
             micPacketSamples.removeAll()
@@ -326,13 +320,11 @@ final class AudioBridge {
                 // 1) fade the already-playing ringback tail down over ~8 ms;
                 // 2) stop/flush old scheduled ringback;
                 // 3) rebuffer the new ACTIVE stream;
-                // 4) fade the first 20 ms of ACTIVE speech in.
+                // 4) start ACTIVE speech at full level.
                 //
-                // This is deliberately NOT used during normal steady-state
-                // packet loss/rebuffering.
+                // No ACTIVE fade-in is used, so the first phoneme is not
+                // deliberately attenuated.
                 self.fadeOutAndFlushForStreamChange()
-                self.streamStartFadeFramesRemaining =
-                    self.streamStartFadeFrameCount
             }
 
             self.remoteSessionID = packet.sessionID
@@ -581,16 +573,6 @@ final class AudioBridge {
                 continue
             }
 
-            if streamStartFadeFramesRemaining > 0 {
-                applyStreamStartFadeIn(
-                    to: buffer,
-                    frameIndex:
-                        streamStartFadeFrameCount
-                        - streamStartFadeFramesRemaining
-                )
-                streamStartFadeFramesRemaining -= 1
-            }
-
             pendingPlaybackOutput = next
             scheduledBuffers += 1
 
@@ -611,36 +593,6 @@ final class AudioBridge {
 
         if !player.isPlaying && scheduledBuffers > 0 {
             player.play()
-        }
-    }
-
-    private func applyStreamStartFadeIn(
-        to buffer: AVAudioPCMBuffer,
-        frameIndex: Int
-    ) {
-        guard let channel = buffer.floatChannelData?[0] else {
-            return
-        }
-
-        let count = Int(buffer.frameLength)
-        guard count > 0 else { return }
-
-        let totalSourceFrames =
-            max(1, streamStartFadeFrameCount)
-        let frameStart =
-            Double(frameIndex) / Double(totalSourceFrames)
-        let frameEnd =
-            Double(frameIndex + 1) / Double(totalSourceFrames)
-
-        for index in 0..<count {
-            let t =
-                Double(index) / Double(max(1, count - 1))
-            let gain =
-                frameStart + (frameEnd - frameStart) * t
-
-            channel[index] *= Float(
-                min(1.0, max(0.0, gain))
-            )
         }
     }
 
