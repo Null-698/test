@@ -160,6 +160,30 @@ final class BLECallController: NSObject, ObservableObject {
         audioPeerStatus = "iPhone call audio ready"
     }
 
+    @discardableResult
+    func sendDtmf(_ rawDigits: String) -> Bool {
+        let digits = rawDigits.filter {
+            $0.isNumber || $0 == "*" || $0 == "#"
+        }
+
+        guard !digits.isEmpty,
+              digits.count <= 32,
+              digits.count == rawDigits.count
+        else {
+            bluetoothStatus = "Invalid DTMF digits."
+            return false
+        }
+
+        guard callState == "ACTIVE" ||
+              uiCallState == "ACTIVE"
+        else {
+            bluetoothStatus = "DTMF requires an active call."
+            return false
+        }
+
+        return sendCommand("CMD|DTMF|\(digits)")
+    }
+
     func dial() {
         _ = performDial(number: dialNumber)
     }

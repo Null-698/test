@@ -679,3 +679,106 @@ Final handoff behavior:
 
 This keeps the anti-click ringback tail smoothing but avoids deliberately
 softening the first phoneme spoken immediately after answer.
+
+
+## iOS 26 Liquid Glass Phone-style UI
+
+The in-app calling experience has been redesigned around public iOS 26
+SwiftUI APIs:
+
+- standard `TabView` for native iOS 26 Liquid Glass tab-bar behavior;
+- Keypad as the default screen;
+- 3x4 Phone-style dial pad with number/letter legends;
+- long-press `0` inserts `+`;
+- delete and green Call controls;
+- contact-name lookup while dialing;
+- full-screen in-app call UI with contact portrait/background;
+- native-looking mute/audio/keypad control geometry;
+- `AVRoutePickerView` for the real iOS audio-route picker;
+- Liquid Glass custom controls via `GlassEffectContainer` and
+  `.glassEffect(...interactive(), in: .circle)` on iOS 26;
+- system-material fallback on iOS 17-25;
+- all diagnostics moved to a Settings tab.
+
+This is implemented with public SwiftUI/AVKit APIs and SF Symbols. No private
+Phone.app assets or private frameworks are used.
+
+The call backend is unchanged: BLE, CallKit, Contacts, AirPods/HFP routing,
+J6A1 UDP audio, jitter/PLC/clock recovery, and DIALING->ACTIVE handoff logic
+are untouched.
+
+
+# System-first CallKit + native DTMF
+
+Successful CallKit calls no longer open the custom full-screen call view.
+
+Normal path:
+
+```text
+Liquid Glass dialer
+→ CXStartCallAction / incoming CXProvider call
+→ iOS system CallKit call is authoritative
+→ app remains on Keypad/Settings with only a compact glass call strip
+```
+
+The full custom `InAppCallView` remains only as a fail-open fallback if
+CallKit itself becomes unavailable.
+
+## Native CallKit keypad / DTMF
+
+`CXCallUpdate.supportsDTMF = true`.
+
+When the user enters a digit from the native CallKit in-call keypad, CallKit
+delivers `CXPlayDTMFCallAction`. The app forwards:
+
+```text
+CMD|DTMF|<digits>
+```
+
+over the existing BLE control characteristic to the J6. Android Telecom then
+injects each DTMF digit into the live cellular call.
+
+CallKit handles local keypad tone feedback. The app forwards the digits only.
+
+No audio transport, jitter, answer-handoff, Contacts, AirPods, or UDP wire
+changes are included.
+
+
+# Full in-app call UI + CallKit in parallel
+
+This revision restores a full-screen in-app call interface for every active
+call while keeping the actual CallKit call registered and authoritative.
+
+Normal behavior:
+
+```text
+Liquid Glass dialer
+→ Dial / incoming call
+→ real CallKit call exists in iOS
+→ full in-app call UI opens
+→ user may minimize it back to the dialer
+→ compact active-call strip remains
+→ tap the strip to reopen the full in-app call UI
+```
+
+The in-app call UI is functional:
+- caller/contact name and formatted number;
+- contact thumbnail / blurred contact background;
+- live call duration;
+- incoming Accept / Decline;
+- Mute / Unmute through CallKit;
+- native AVRoutePicker for AirPods/speaker/audio route;
+- full in-call DTMF keypad using the same `CMD|DTMF|...` BLE path;
+- End Call through CallKit;
+- minimize / restore.
+
+The real CallKit call still provides:
+- Lock Screen/system call surfaces;
+- Recents;
+- system mute/end actions;
+- AirPods/AVAudioSession ownership;
+- native CallKit keypad and DTMF;
+- background/system call state.
+
+The custom UI uses public iOS 26 Liquid Glass APIs and SF Symbols. It does not
+depend on private Phone.app frameworks or private assets.

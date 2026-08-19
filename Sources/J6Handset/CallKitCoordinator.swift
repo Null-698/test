@@ -488,7 +488,7 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         update.supportsHolding = false
         update.supportsGrouping = false
         update.supportsUngrouping = false
-        update.supportsDTMF = false
+        update.supportsDTMF = true
         return update
     }
 
@@ -812,6 +812,30 @@ extension CallKitCoordinator: @preconcurrency CXProviderDelegate {
             ? "Microphone muted"
             : "Microphone unmuted"
         action.fulfill()
+    }
+
+    func provider(
+        _ provider: CXProvider,
+        perform action: CXPlayDTMFCallAction
+    ) {
+        guard currentCallUUID == action.callUUID,
+              ble.callState == "ACTIVE"
+        else {
+            status = "DTMF rejected: no active cellular call"
+            action.fail()
+            return
+        }
+
+        // CallKit plays the local keypad feedback itself. We forward only the
+        // actual digits to the J6, where Telecom injects them into the live
+        // GSM call.
+        if ble.sendDtmf(action.digits) {
+            status = "DTMF sent: \(action.digits)"
+            action.fulfill()
+        } else {
+            status = "DTMF failed: J6 BLE unavailable"
+            action.fail()
+        }
     }
 
     func provider(
