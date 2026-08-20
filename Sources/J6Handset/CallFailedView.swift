@@ -6,151 +6,132 @@ struct CallFailedView: View {
     let onCallBack: () -> Void
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                Color(
-                    red: 0.145,
-                    green: 0.145,
-                    blue: 0.150
-                )
-                .ignoresSafeArea()
+        ZStack {
+            CallFailedBackdrop()
 
-                VStack(spacing: 0) {
-                    VStack(spacing: 5) {
-                        Text("Call failed")
-                            .font(
-                                .system(
-                                    size: 23,
-                                    weight: .semibold
-                                )
-                            )
-                            .foregroundStyle(
-                                .white.opacity(0.56)
-                            )
+            VStack(spacing: 24) {
+                Spacer()
 
-                        Text(
-                            number.isEmpty
-                                ? "Unknown"
-                                : number
-                        )
-                        .font(
-                            .system(
-                                size: 39,
-                                weight: .semibold
-                            )
-                        )
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.55)
-                    }
-                    .padding(
-                        .top,
-                        max(
-                            proxy.safeAreaInsets.top + 82,
-                            126
-                        )
-                    )
-                    .padding(.horizontal, 28)
-
-                    Spacer()
-
-                    HStack {
-                        failedAction(
-                            title: "Cancel",
-                            systemImage: "xmark",
-                            fill: Color(
-                                red: 0.62,
-                                green: 0.62,
-                                blue: 0.63
-                            ),
-                            action: onCancel
-                        )
-
-                        Spacer()
-
-                        failedAction(
-                            title: "Call Back",
-                            systemImage: "phone.fill",
-                            fill:
-                                Color(
-                                    uiColor:
-                                        .systemGreen
-                                ),
-                            action: onCallBack
-                        )
-                    }
-                    .padding(.horizontal, 43)
-                    .padding(
-                        .bottom,
-                        max(
-                            proxy.safeAreaInsets.bottom + 50,
-                            68
-                        )
-                    )
-                }
-            }
-        }
-        .preferredColorScheme(.dark)
-    }
-
-    private func failedAction(
-        title: String,
-        systemImage: String,
-        fill: Color,
-        action: @escaping () -> Void
-    ) -> some View {
-        VStack(spacing: 10) {
-            Button(action: action) {
-                Image(systemName: systemImage)
+                Image(systemName: "phone.down.fill")
                     .font(
                         .system(
                             size: 30,
-                            weight: .medium
+                            weight: .semibold
                         )
                     )
-                    .foregroundStyle(.white)
-                    .frame(width: 82, height: 82)
-                    .background(fill, in: Circle())
-                    .overlay {
-                        Circle()
-                            .stroke(
-                                Color.white.opacity(0.55),
-                                lineWidth: 0.8
-                            )
-                    }
-            }
-            .buttonStyle(FailedCallPressStyle())
+                    .frame(
+                        width: 84,
+                        height: 84
+                    )
+                    .glassEffect(
+                        .regular,
+                        in: .circle
+                    )
 
-            Text(title)
-                .font(
-                    .system(
-                        size: 16,
-                        weight: .regular
+                VStack(spacing: 7) {
+                    Text("Call ended")
+                        .font(
+                            .system(
+                                size: 30,
+                                weight: .bold,
+                                design: .rounded
+                            )
+                        )
+
+                    Text(
+                        number.isEmpty
+                            ? "Unknown number"
+                            : number
+                    )
+                    .font(.system(size: 17))
+                    .foregroundStyle(
+                        .white.opacity(0.65)
+                    )
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+                }
+
+                Spacer()
+
+                GlassEffectContainer(spacing: 14) {
+                    VStack(spacing: 14) {
+                        Button {
+                            onCallBack()
+                        } label: {
+                            Label(
+                                "Call Again",
+                                systemImage:
+                                    "phone.fill"
+                            )
+                            .font(
+                                .system(
+                                    size: 17,
+                                    weight: .semibold
+                                )
+                            )
+                            .frame(
+                                maxWidth: .infinity
+                            )
+                            .frame(height: 58)
+                        }
+                        .buttonStyle(
+                            .glassProminent
+                        )
+                        .tint(.green)
+
+                        Button("Dismiss") {
+                            onCancel()
+                        }
+                        .buttonStyle(.glass)
+                        .controlSize(.large)
+                    }
+                }
+                .padding(16)
+                .glassEffect(
+                    .regular,
+                    in: .rect(
+                        cornerRadius: 30
                     )
                 )
-                .foregroundStyle(.white)
+                .padding(.horizontal, 22)
+                .padding(.bottom, 44)
+            }
+            .foregroundStyle(.white)
         }
+        .ignoresSafeArea()
+        .preferredColorScheme(.dark)
     }
 }
 
-private struct FailedCallPressStyle: ButtonStyle {
-    func makeBody(
-        configuration: Configuration
-    ) -> some View {
-        configuration.label
-            .scaleEffect(
-                configuration.isPressed
-                    ? 0.94
-                    : 1
+private struct CallFailedBackdrop: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(
+                        red: 0.055,
+                        green: 0.065,
+                        blue: 0.11
+                    ),
+                    Color(
+                        red: 0.11,
+                        green: 0.055,
+                        blue: 0.08
+                    )
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
             )
-            .opacity(
-                configuration.isPressed
-                    ? 0.82
-                    : 1
+
+            RadialGradient(
+                colors: [
+                    Color.red.opacity(0.16),
+                    .clear
+                ],
+                center: .bottomTrailing,
+                startRadius: 20,
+                endRadius: 480
             )
-            .animation(
-                .easeOut(duration: 0.09),
-                value: configuration.isPressed
-            )
+        }
     }
 }

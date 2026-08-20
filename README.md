@@ -902,3 +902,53 @@ The selected and unselected buttons are now emitted as separate ViewBuilder
 branches, so each `.buttonStyle(...)` has its own concrete type.
 
 No audio, BLE, DTMF, CallKit, tab-bar, or Android behavior changed.
+
+
+# Modern Glass UI revision
+
+This revision intentionally stops trying to clone Phone.app / CallKit pixel for
+pixel.
+
+Tab bar is now exactly:
+
+- Keypad
+- Settings
+
+Removed from the tab bar:
+
+- Calls
+- Contacts
+- Search
+
+The former Contacts / Bluetooth / audio controls are consolidated into Settings:
+
+- Contacts
+- J6 Connection
+- Call Audio
+- Diagnostics
+
+The modern dialer uses:
+
+- adaptive system background
+- restrained gradients
+- a single glass number/contact card
+- clear Liquid Glass keypad buttons
+- prominent green Liquid Glass call button
+- contact-name resolution
+- long-press 0 for +
+- redial
+- delete
+
+The modern in-app call UI is intentionally app-native rather than a Phone clone.
+Every visible control is functional:
+
+- Minimize
+- Mute / Unmute
+- Audio route picker
+- DTMF keypad
+- End Call
+- Answer / Decline
+
+DTMF still goes through `CXPlayDTMFCallAction`.
+CallKit remains authoritative underneath.
+No UDP/audio/CallKit/J6 transport behavior was changed.

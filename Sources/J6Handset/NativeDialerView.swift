@@ -11,16 +11,6 @@ struct NativeDialerView: View {
     @State private var lookupTask: Task<Void, Never>?
     @AppStorage("LastDialedNumber") private var lastDialedNumber = ""
 
-    // Geometry measured from the supplied real iOS 26 Phone screenshots
-    // (1320x2868 @3x -> 440x956 pt). Used only to size elements, never to
-    // pin absolute on-screen positions, so layout stays centered on every
-    // device size/aspect ratio instead of just the reference device.
-    private let referenceWidth: CGFloat = 440
-    private let referenceHeight: CGFloat = 956
-    private let referenceRowStep: CGFloat = 108
-    private let referenceColumnStep: CGFloat = 112
-    private let referenceKeyDiameter: CGFloat = 88.5
-
     private let keys: [(String, String)] = [
         ("1", ""),
         ("2", "ABC"),
@@ -38,28 +28,36 @@ struct NativeDialerView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let scale = keypadScale(for: proxy.size)
+            ZStack {
+                DialerBackdrop()
 
-            VStack(spacing: 0) {
-                numberDisplay(scale: scale)
-                    .frame(height: 92 * scale)
-                    .padding(.top, topInset(proxy))
-                    .padding(.horizontal, 24)
+                VStack(spacing: 0) {
+                    header
+                        .padding(.top, 14)
 
-                Spacer(minLength: 4)
+                    Spacer(minLength: 18)
 
-                keypad(scale: scale)
+                    numberCard
+                        .padding(.horizontal, 24)
 
-                Spacer(minLength: 4)
+                    Spacer(minLength: 26)
 
-                actionRow(scale: scale)
-                    .padding(.bottom, bottomInset(proxy))
+                    GlassEffectContainer(spacing: 12) {
+                        keypad
+                    }
+
+                    Spacer(minLength: 22)
+
+                    callRow
+
+                    Spacer(minLength: 18)
+                }
+                .padding(.bottom, 12)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height)
         }
-        .background(Color(uiColor: .systemBackground).ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
-        .onChange(of: ble.dialNumber) { _, number in
+        .onChange(of: ble.dialNumber) {
+            _, number in
             resolveName(number)
         }
         .onDisappear {
@@ -67,290 +65,346 @@ struct NativeDialerView: View {
         }
     }
 
-    // MARK: - Adaptive geometry
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Keypad")
+                    .font(
+                        .system(
+                            size: 34,
+                            weight: .bold,
+                            design: .rounded
+                        )
+                    )
 
-    /// Scales keypad element sizes to the available space using BOTH width
-    /// and height, so short devices (e.g. SE) and tall devices (e.g. Pro
-    /// Max) both end up correctly centered instead of only matching the
-    /// single reference screen width.
-    private func keypadScale(for size: CGSize) -> CGFloat {
-        let widthScale = size.width / referenceWidth
-        let heightScale = size.height / referenceHeight
-        return min(max(min(widthScale, heightScale), 0.80), 1.08)
+                Text(
+                    ble.isConnected
+                        ? "J6 connected"
+                        : "J6 disconnected"
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(
+                        ble.isConnected
+                            ? Color.green
+                            : Color.secondary.opacity(0.35)
+                    )
+                    .frame(width: 8, height: 8)
+
+                Image(
+                    systemName:
+                        "iphone.radiowaves.left.and.right"
+                )
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 13)
+            .frame(height: 40)
+            .glassEffect(
+                .regular,
+                in: .capsule
+            )
+        }
+        .padding(.horizontal, 22)
     }
 
-    private func topInset(_ proxy: GeometryProxy) -> CGFloat {
-        max(proxy.safeAreaInsets.top, 12) + 16
-    }
+    private var numberCard: some View {
+        VStack(spacing: 7) {
+            if ble.dialNumber.isEmpty {
+                Text("Enter a number")
+                    .font(
+                        .system(
+                            size: 28,
+                            weight: .medium,
+                            design: .rounded
+                        )
+                    )
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(displayDialNumber)
+                    .font(
+                        .system(
+                            size: 32,
+                            weight: .semibold,
+                            design: .rounded
+                        )
+                    )
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.48)
+                    .contentTransition(.numericText())
 
-    private func bottomInset(_ proxy: GeometryProxy) -> CGFloat {
-        max(proxy.safeAreaInsets.bottom, 12) + 18
-    }
-
-    // MARK: - Number display
-
-    private func numberDisplay(scale: CGFloat) -> some View {
-        VStack(spacing: 4 * scale) {
-            Text(ble.dialNumber.isEmpty ? " " : displayDialNumber)
-                .font(.system(size: 32 * scale, weight: .regular))
-                .foregroundStyle(.primary)
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.50)
-                .contentTransition(.numericText())
-
-            Group {
-                if ble.dialNumber.isEmpty {
-                    Text(" ")
-                } else if !resolvedName.isEmpty {
+                if !resolvedName.isEmpty {
                     Text(resolvedName)
-                        .foregroundStyle(Color.accentColor)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 } else {
-                    Text("Add Number")
-                        .foregroundStyle(Color.accentColor)
-                        .opacity(0.88)
+                    Text("Cellular call")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .font(.system(size: 15 * scale, weight: .regular))
-            .lineLimit(1)
         }
-        // Keeping the container always laid out (with a blank placeholder
-        // instead of conditionally inserting the whole view) is what stops
-        // the number/keypad from visibly jumping the moment you dial the
-        // first digit.
-        .animation(.easeInOut(duration: 0.15), value: ble.dialNumber.isEmpty)
+        .frame(maxWidth: .infinity)
+        .frame(height: 96)
+        .padding(.horizontal, 18)
+        .glassEffect(
+            .regular,
+            in: .rect(cornerRadius: 26)
+        )
     }
 
-    // MARK: - Keypad
-
-    private func keypad(scale: CGFloat) -> some View {
-        let gap = (referenceColumnStep - referenceKeyDiameter) * scale
-        let rowGap = (referenceRowStep - referenceKeyDiameter) * scale
-
-        return VStack(spacing: rowGap) {
+    private var keypad: some View {
+        VStack(spacing: 12) {
             ForEach(0..<4, id: \.self) { row in
-                HStack(spacing: gap) {
+                HStack(spacing: 16) {
                     ForEach(0..<3, id: \.self) { column in
-                        let key = keys[row * 3 + column]
+                        let key =
+                            keys[row * 3 + column]
+
                         keypadButton(
                             digit: key.0,
-                            letters: key.1,
-                            scale: scale
+                            letters: key.1
                         )
                     }
                 }
             }
         }
-        // Grid centers itself horizontally and vertically via the parent
-        // VStack + Spacers, so it never needs a hardcoded on-screen point.
-        .frame(maxWidth: .infinity)
     }
 
     private func keypadButton(
         digit: String,
-        letters: String,
-        scale: CGFloat
+        letters: String
     ) -> some View {
-        let button = Button {
+        Button {
             appendDigit(digit)
         } label: {
-            VStack(spacing: -3 * scale) {
+            VStack(spacing: -1) {
                 Text(digit)
-                    .font(.system(size: 36 * scale, weight: .regular))
+                    .font(
+                        .system(
+                            size: 31,
+                            weight: .medium,
+                            design: .rounded
+                        )
+                    )
                     .monospacedDigit()
 
                 Text(letters)
-                    .font(.system(size: 10.5 * scale, weight: .semibold))
-                    .tracking(2.25 * scale)
-                    .frame(height: 13 * scale)
-                    .opacity(letters.isEmpty ? 0 : 1)
+                    .font(
+                        .system(
+                            size: 9.5,
+                            weight: .semibold
+                        )
+                    )
+                    .tracking(1.8)
+                    .frame(height: 11)
+                    .opacity(
+                        letters.isEmpty
+                            ? 0
+                            : 0.78
+                    )
             }
-            .foregroundStyle(.primary)
-            .frame(
-                width: referenceKeyDiameter * scale,
-                height: referenceKeyDiameter * scale
-            )
-            .background(keyFill, in: Circle())
-            .overlay {
-                Circle().stroke(keyStroke, lineWidth: 0.55)
-            }
-            .shadow(
-                color: colorScheme == .light
-                    ? Color.black.opacity(0.055)
-                    : .clear,
-                radius: 13 * scale,
-                y: 7 * scale
-            )
-            .contentShape(Circle())
+            .frame(width: 78, height: 78)
         }
-        .buttonStyle(PhoneKeyPressStyle())
-        .accessibilityLabel(letters.isEmpty ? digit : "\(digit), \(letters)")
-
-        // Only the "0" key needs to distinguish a long press (insert "+").
-        // Attaching that recognizer to every key was what made ordinary
-        // taps on 1-9/*/# feel delayed, since the system had to wait to
-        // rule out a long press before committing each tap.
-        if digit == "0" {
-            return AnyView(
-                button.simultaneousGesture(
-                    LongPressGesture(minimumDuration: 0.43)
-                        .onEnded { _ in
-                            if ble.dialNumber.last == "0" {
-                                ble.dialNumber.removeLast()
-                            }
-                            ble.dialNumber.append("+")
-                            haptic(.medium)
-                        }
-                )
+        .buttonStyle(.glass(.clear))
+        .buttonBorderShape(.circle)
+        .simultaneousGesture(
+            LongPressGesture(
+                minimumDuration: 0.43
             )
-        }
-
-        return AnyView(button)
-    }
-
-    // MARK: - Action row (call / delete)
-
-    private func actionRow(scale: CGFloat) -> some View {
-        // A fixed-width slot on each side keeps the call button perfectly
-        // centered whether or not the delete button is currently visible,
-        // instead of the delete button appearing and nudging things off
-        // center.
-        let sideWidth = referenceColumnStep * scale
-
-        return HStack(spacing: 0) {
-            Color.clear.frame(width: sideWidth, height: sideWidth)
-
-            Spacer(minLength: 0)
-
-            callButton(scale: scale)
-
-            Spacer(minLength: 0)
-
-            Group {
-                if !ble.dialNumber.isEmpty {
-                    deleteButton(scale: scale)
-                        .transition(.opacity.combined(with: .scale))
-                } else {
-                    Color.clear
-                }
-            }
-            .frame(width: sideWidth, height: sideWidth)
-        }
-        .animation(.snappy(duration: 0.18), value: ble.dialNumber.isEmpty)
-        .padding(.horizontal, 24)
-    }
-
-    private func callButton(scale: CGFloat) -> some View {
-        Button {
-            if ble.dialNumber.isEmpty {
-                guard !lastDialedNumber.isEmpty else {
-                    haptic(.light)
+            .onEnded { _ in
+                guard digit == "0" else {
                     return
                 }
-                ble.dialNumber = lastDialedNumber
-                haptic(.light)
-                return
+
+                if ble.dialNumber.last == "0" {
+                    ble.dialNumber.removeLast()
+                }
+
+                ble.dialNumber.append("+")
+                haptic(.medium)
+            }
+        )
+        .accessibilityLabel(
+            letters.isEmpty
+                ? digit
+                : "\(digit), \(letters)"
+        )
+    }
+
+    private var callRow: some View {
+        HStack(spacing: 20) {
+            if !ble.dialNumber.isEmpty {
+                Button {
+                    guard !ble.dialNumber.isEmpty else {
+                        return
+                    }
+
+                    ble.dialNumber.removeLast()
+                    haptic(.light)
+                } label: {
+                    Image(systemName: "delete.left.fill")
+                        .font(.system(size: 21, weight: .medium))
+                        .frame(width: 52, height: 52)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .transition(
+                    .opacity.combined(
+                        with: .scale
+                    )
+                )
+            } else {
+                Color.clear
+                    .frame(width: 52, height: 52)
             }
 
-            lastDialedNumber = ble.dialNumber
-            haptic(.medium)
-            callKit.startOutgoing(number: ble.dialNumber)
-        } label: {
-            Image(systemName: "phone.fill")
-                .font(.system(size: 28 * scale, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 86 * scale, height: 86 * scale)
-                .background(Color(uiColor: .systemGreen), in: Circle())
-                .overlay {
-                    Circle().stroke(
-                        Color.white.opacity(colorScheme == .dark ? 0.36 : 0.18),
-                        lineWidth: 0.8
-                    )
-                }
+            Button {
+                dialOrRedial()
+            } label: {
+                Image(systemName: "phone.fill")
+                    .font(.system(size: 25, weight: .bold))
+                    .frame(width: 70, height: 70)
+            }
+            .buttonStyle(.glassProminent)
+            .buttonBorderShape(.circle)
+            .tint(.green)
+            .disabled(!ble.isConnected)
+            .opacity(ble.isConnected ? 1 : 0.45)
+
+            Color.clear
+                .frame(width: 52, height: 52)
         }
-        .buttonStyle(PhoneKeyPressStyle())
-        .disabled(!ble.isConnected)
-        .opacity(ble.isConnected ? 1 : 0.42)
-        .accessibilityLabel("Call")
-    }
-
-    private func deleteButton(scale: CGFloat) -> some View {
-        Button {
-            guard !ble.dialNumber.isEmpty else { return }
-            ble.dialNumber.removeLast()
-            haptic(.light)
-        } label: {
-            Image(systemName: "delete.left.fill")
-                .font(.system(size: 25 * scale, weight: .regular))
-                .foregroundStyle(.primary)
-                .frame(width: 64 * scale, height: 64 * scale)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Delete")
-    }
-
-    // MARK: - Styling
-
-    private var keyFill: Color {
-        if colorScheme == .dark {
-            return Color(red: 0.070, green: 0.070, blue: 0.073)
-        }
-        return Color(red: 0.988, green: 0.988, blue: 0.990)
-    }
-
-    private var keyStroke: Color {
-        colorScheme == .dark
-            ? Color.white.opacity(0.12)
-            : Color.white.opacity(0.90)
+        .animation(
+            .snappy(duration: 0.18),
+            value: ble.dialNumber.isEmpty
+        )
     }
 
     private var displayDialNumber: String {
-        let basic = contacts.basicMetadata(for: ble.dialNumber)
+        let basic =
+            contacts.basicMetadata(
+                for: ble.dialNumber
+            )
+
         return basic.formattedNumber.isEmpty
             ? ble.dialNumber
             : basic.formattedNumber
     }
 
-    // MARK: - Actions
+    private func dialOrRedial() {
+        if ble.dialNumber.isEmpty {
+            guard !lastDialedNumber.isEmpty else {
+                haptic(.light)
+                return
+            }
 
-    private func appendDigit(_ digit: String) {
-        guard ble.dialNumber.count < 32 else { return }
+            ble.dialNumber = lastDialedNumber
+            haptic(.light)
+            return
+        }
+
+        lastDialedNumber = ble.dialNumber
+        haptic(.medium)
+
+        callKit.startOutgoing(
+            number: ble.dialNumber
+        )
+    }
+
+    private func appendDigit(
+        _ digit: String
+    ) {
+        guard ble.dialNumber.count < 32 else {
+            return
+        }
+
         ble.dialNumber.append(digit)
         haptic(.light)
     }
 
-    private func resolveName(_ number: String) {
+    private func resolveName(
+        _ number: String
+    ) {
         lookupTask?.cancel()
         resolvedName = ""
 
-        guard number.filter({ $0.isNumber }).count >= 6 else {
+        guard number
+            .filter({ $0.isNumber })
+            .count >= 6
+        else {
             return
         }
 
         lookupTask = Task {
-            try? await Task.sleep(for: .milliseconds(180))
-            guard !Task.isCancelled else { return }
+            try? await Task.sleep(
+                for: .milliseconds(180)
+            )
 
-            let metadata = await contacts.resolve(number: number)
-            guard !Task.isCancelled, ble.dialNumber == number else {
+            guard !Task.isCancelled else {
                 return
             }
 
-            resolvedName = metadata.displayName ?? ""
+            let metadata =
+                await contacts.resolve(
+                    number: number
+                )
+
+            guard !Task.isCancelled,
+                  ble.dialNumber == number
+            else {
+                return
+            }
+
+            resolvedName =
+                metadata.displayName ?? ""
         }
     }
 
-    private func haptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle) {
-        UIImpactFeedbackGenerator(style: style).impactOccurred()
+    private func haptic(
+        _ style:
+            UIImpactFeedbackGenerator.FeedbackStyle
+    ) {
+        UIImpactFeedbackGenerator(
+            style: style
+        )
+        .impactOccurred()
     }
 }
 
-private struct PhoneKeyPressStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.955 : 1)
-            .opacity(configuration.isPressed ? 0.72 : 1)
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+private struct DialerBackdrop: View {
+    var body: some View {
+        ZStack {
+            Color(uiColor: .systemBackground)
+
+            RadialGradient(
+                colors: [
+                    Color.accentColor.opacity(0.11),
+                    .clear
+                ],
+                center: .topTrailing,
+                startRadius: 20,
+                endRadius: 420
+            )
+
+            RadialGradient(
+                colors: [
+                    Color.green.opacity(0.06),
+                    .clear
+                ],
+                center: .bottomLeading,
+                startRadius: 20,
+                endRadius: 360
+            )
+        }
+        .ignoresSafeArea()
     }
 }
