@@ -888,3 +888,17 @@ the digit to the J6.
 The matching Android patch disables the J6's own local Telecom DTMF tone while
 leaving network DTMF signaling enabled. Install both matching patches for the
 distortion fix.
+
+
+## Compile fix: Liquid Glass selected-state control
+
+Swift cannot type-erase different concrete PrimitiveButtonStyle types through:
+
+```swift
+.buttonStyle(selected ? .glassProminent : .glass(.clear))
+```
+
+The selected and unselected buttons are now emitted as separate ViewBuilder
+branches, so each `.buttonStyle(...)` has its own concrete type.
+
+No audio, BLE, DTMF, CallKit, tab-bar, or Android behavior changed.

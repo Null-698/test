@@ -239,19 +239,38 @@ struct InAppCallView: View {
         action: @escaping () -> Void
     ) -> some View {
         VStack(spacing: 8) {
-            Button(action: action) {
-                Image(systemName: symbol)
-                    .font(.system(size: 24, weight: .semibold))
-                    .frame(width: 68, height: 68)
+            Group {
+                if selected {
+                    Button(action: action) {
+                        Image(systemName: symbol)
+                            .font(
+                                .system(
+                                    size: 24,
+                                    weight: .semibold
+                                )
+                            )
+                            .frame(width: 68, height: 68)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .buttonBorderShape(.circle)
+                    .tint(.white)
+                    .foregroundStyle(.black)
+                } else {
+                    Button(action: action) {
+                        Image(systemName: symbol)
+                            .font(
+                                .system(
+                                    size: 24,
+                                    weight: .semibold
+                                )
+                            )
+                            .frame(width: 68, height: 68)
+                    }
+                    .buttonStyle(.glass(.clear))
+                    .buttonBorderShape(.circle)
+                    .foregroundStyle(.white)
+                }
             }
-            .buttonStyle(
-                selected
-                    ? .glassProminent
-                    : .glass(.clear)
-            )
-            .buttonBorderShape(.circle)
-            .tint(selected ? .white : .primary)
-            .foregroundStyle(selected ? .black : .white)
             .disabled(!enabled)
             .opacity(enabled ? 1 : 0.28)
 
