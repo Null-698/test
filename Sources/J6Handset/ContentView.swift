@@ -9,71 +9,54 @@ struct ContentView: View {
 
     @State private var selectedTab: RootTab = .keypad
     @State private var callScreenMinimized = false
+    @State private var searchText = ""
 
     var body: some View {
         ZStack {
-            TabView(selection: $selectedTab) {
-                NavigationStack {
-                    NativeDialerView()
-                        .safeAreaInset(edge: .top, spacing: 8) {
-                            if hasVisibleCall && callScreenMinimized {
-                                SystemCallStrip()
-                                    .padding(.horizontal, 14)
-                                    .onTapGesture {
-                                        callScreenMinimized = false
-                                    }
-                            }
-                        }
-                }
-                .tabItem {
-                    Label("Keypad", systemImage: "circle.grid.3x3.fill")
-                }
-                .tag(RootTab.keypad)
+            rootTabs
 
-                NavigationStack {
-                    Form {
-                        contactsSection
-                        bluetoothSection
-                        audioSection
-                    }
-                    .navigationTitle("Settings")
-                    .safeAreaInset(edge: .top, spacing: 8) {
-                        if hasVisibleCall && callScreenMinimized {
-                            SystemCallStrip()
-                                .padding(.horizontal, 14)
-                                .onTapGesture {
-                                    callScreenMinimized = false
-                                }
-                        }
-                    }
-                    .onAppear {
-                        contacts.requestAccessIfNeeded()
-                        relay.refreshLocalIP()
-                        if ble.isConnected {
-                            ble.configureAudioPeer(ip: relay.localIP)
-                        }
-                    }
-                }
-                .tabItem {
-                    Label("Settings", systemImage: "gearshape.fill")
-                }
-                .tag(RootTab.settings)
-            }
-
-            // Our in-app call screen and the real CallKit system call coexist.
-            // CallKit remains authoritative for system integration; this view
-            // controls the same BLE/call actions from inside the app.
-            if hasVisibleCall && !callScreenMinimized {
+            // Our full Phone-style in-app call face controls the same real
+            // CallKit/J6 call. System CallKit remains authoritative.
+            if hasVisibleCall &&
+               !callScreenMinimized {
                 InAppCallView {
                     callScreenMinimized = true
                 }
                 .transition(.opacity)
-                .zIndex(10)
+                .zIndex(20)
+            }
+
+            if let failed =
+                callKit.failedOutgoingNumber {
+                CallFailedView(
+                    number: formatted(
+                        failed
+                    ),
+                    onCancel: {
+                        callKit
+                            .dismissFailedOutgoingCall()
+                    },
+                    onCallBack: {
+                        let retry = failed
+                        callKit
+                            .dismissFailedOutgoingCall()
+                        callKit.startOutgoing(
+                            number: retry
+                        )
+                    }
+                )
+                .transition(.opacity)
+                .zIndex(30)
             }
         }
         .animation(
             .easeInOut(duration: 0.18),
             value: callScreenMinimized
+        )
+        .animation(
+            .easeInOut(duration: 0.18),
+            value:
+                callKit.failedOutgoingNumber
         )
         .onChange(of: ble.uiCallState) {
             oldState,
@@ -88,6 +71,216 @@ struct ContentView: View {
                newState == "DISCONNECTED" {
                 callScreenMinimized = false
             }
+        }
+    }
+
+    @ViewBuilder
+    private var rootTabs: some View {
+        if #available(iOS 18.0, *) {
+            TabView(selection: $selectedTab) {
+                Tab(
+                    "Calls",
+                    systemImage: "clock",
+                    value: RootTab.calls
+                ) {
+                    gatewayScreen
+                }
+
+                Tab(
+                    "Contacts",
+                    systemImage:
+                        "person.crop.circle",
+                    value: RootTab.contacts
+                ) {
+                    contactsScreen
+                }
+
+                Tab(
+                    "Keypad",
+                    systemImage:
+                        "circle.grid.3x3",
+                    value: RootTab.keypad
+                ) {
+                    dialerScreen
+                }
+
+                Tab(
+                    value: RootTab.search,
+                    role: .search
+                ) {
+                    searchScreen
+                }
+            }
+            .tint(.blue)
+        } else {
+            TabView(selection: $selectedTab) {
+                gatewayScreen
+                    .tabItem {
+                        Label(
+                            "Calls",
+                            systemImage: "clock"
+                        )
+                    }
+                    .tag(RootTab.calls)
+
+                contactsScreen
+                    .tabItem {
+                        Label(
+                            "Contacts",
+                            systemImage:
+                                "person.crop.circle"
+                        )
+                    }
+                    .tag(RootTab.contacts)
+
+                dialerScreen
+                    .tabItem {
+                        Label(
+                            "Keypad",
+                            systemImage:
+                                "circle.grid.3x3"
+                        )
+                    }
+                    .tag(RootTab.keypad)
+
+                searchScreen
+                    .tabItem {
+                        Label(
+                            "Search",
+                            systemImage:
+                                "magnifyingglass"
+                        )
+                    }
+                    .tag(RootTab.search)
+            }
+            .tint(.blue)
+        }
+    }
+
+    private var dialerScreen: some View {
+        NativeDialerView()
+            .safeAreaInset(
+                edge: .top,
+                spacing: 8
+            ) {
+                if hasVisibleCall &&
+                   callScreenMinimized {
+                    SystemCallStrip()
+                        .padding(
+                            .horizontal,
+                            14
+                        )
+                        .onTapGesture {
+                            callScreenMinimized = false
+                        }
+                }
+            }
+    }
+
+    private var gatewayScreen: some View {
+        NavigationStack {
+            Form {
+                bluetoothSection
+                audioSection
+            }
+            .navigationTitle("Calls")
+            .safeAreaInset(
+                edge: .top,
+                spacing: 8
+            ) {
+                if hasVisibleCall &&
+                   callScreenMinimized {
+                    SystemCallStrip()
+                        .padding(
+                            .horizontal,
+                            14
+                        )
+                        .onTapGesture {
+                            callScreenMinimized = false
+                        }
+                }
+            }
+            .onAppear {
+                relay.refreshLocalIP()
+
+                if ble.isConnected {
+                    ble.configureAudioPeer(
+                        ip: relay.localIP
+                    )
+                }
+            }
+        }
+    }
+
+    private var contactsScreen: some View {
+        NavigationStack {
+            Form {
+                contactsSection
+            }
+            .navigationTitle("Contacts")
+            .onAppear {
+                contacts
+                    .requestAccessIfNeeded()
+            }
+        }
+    }
+
+    private var searchScreen: some View {
+        NavigationStack {
+            List {
+                if searchText.isEmpty {
+                    ContentUnavailableView(
+                        "Search",
+                        systemImage:
+                            "magnifyingglass",
+                        description: Text(
+                            "Enter a phone number or contact name."
+                        )
+                    )
+                    .listRowBackground(
+                        Color.clear
+                    )
+                } else {
+                    let basic =
+                        contacts.basicMetadata(
+                            for: searchText
+                        )
+
+                    Button {
+                        ble.dialNumber =
+                            searchText
+                        selectedTab = .keypad
+                    } label: {
+                        VStack(
+                            alignment: .leading,
+                            spacing: 4
+                        ) {
+                            Text(searchText)
+                                .foregroundStyle(
+                                    .primary
+                                )
+
+                            if !basic
+                                .formattedNumber
+                                .isEmpty {
+                                Text(
+                                    basic
+                                        .formattedNumber
+                                )
+                                .font(.footnote)
+                                .foregroundStyle(
+                                    .secondary
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Search")
+            .searchable(
+                text: $searchText,
+                prompt: "Search"
+            )
         }
     }
 
@@ -278,6 +471,7 @@ struct ContentView: View {
         }
     }
 
+
     private var hasVisibleCall: Bool {
         ble.uiCallState == "RINGING" ||
         hasOngoingCall
@@ -316,24 +510,23 @@ struct ContentView: View {
         }
     }
 
-    private var stateColor: Color {
-        switch ble.uiCallState {
-        case "RINGING":
-            return .orange
-        case "ACTIVE":
-            return .green
-        case "DIALING", "CONNECTING":
-            return .blue
-        case "ERROR":
-            return .red
-        default:
-            return .secondary
-        }
+    private func formatted(
+        _ number: String
+    ) -> String {
+        let basic =
+            contacts.basicMetadata(
+                for: number
+            )
+
+        return basic.formattedNumber.isEmpty
+            ? number
+            : basic.formattedNumber
     }
 }
 
-
 private enum RootTab: Hashable {
+    case calls
+    case contacts
     case keypad
-    case settings
+    case search
 }

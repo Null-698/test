@@ -27,6 +27,10 @@ final class CallKitCoordinator: NSObject, ObservableObject {
     @Published private(set) var contactMatched = false
     @Published private(set) var contactThumbnailImageData: Data?
 
+    // UI state that must survive recreation of the custom call screen.
+    @Published private(set) var connectedAt: Date?
+    @Published private(set) var failedOutgoingNumber: String?
+
     private let ble: BLECallController
     private let relay: RelayController
     private let contacts: ContactResolver
@@ -96,6 +100,8 @@ final class CallKitCoordinator: NSObject, ObservableObject {
 
         relay.enableCallKitAudioManagement()
         callKitAvailable = true
+        failedOutgoingNumber = nil
+        connectedAt = nil
 
         let basicMetadata =
             contacts.basicMetadata(for: number)
@@ -227,6 +233,10 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         )
     }
 
+    func dismissFailedOutgoingCall() {
+        failedOutgoingNumber = nil
+    }
+
     // MARK: - Runtime binding
 
     private func bindRuntime() {
@@ -292,6 +302,10 @@ final class CallKitCoordinator: NSObject, ObservableObject {
             }
 
         case "ACTIVE":
+            if connectedAt == nil {
+                connectedAt = Date()
+            }
+
             if currentDirection == .outgoing,
                let uuid = currentCallUUID,
                !outgoingConnectedReported {
@@ -347,6 +361,8 @@ final class CallKitCoordinator: NSObject, ObservableObject {
 
         relay.enableCallKitAudioManagement()
         callKitAvailable = true
+        failedOutgoingNumber = nil
+        connectedAt = nil
 
         let rawNumber = number.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -447,6 +463,10 @@ final class CallKitCoordinator: NSObject, ObservableObject {
             } else if currentDirection == .outgoing &&
                         !outgoingConnectedReported {
                 reason = .failed
+                failedOutgoingNumber =
+                    currentNumber.isEmpty
+                        ? displayPhoneNumber
+                        : currentNumber
             } else {
                 reason = .remoteEnded
             }
@@ -653,6 +673,7 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         outgoingConnectingReported = false
         outgoingConnectedReported = false
         localEndRequested = false
+        connectedAt = nil
 
         if isMuted {
             isMuted = false
@@ -747,6 +768,10 @@ extension CallKitCoordinator: @preconcurrency CXProviderDelegate {
             status = "Outgoing cellular call started"
             action.fulfill()
         } else {
+            failedOutgoingNumber =
+                currentNumber.isEmpty
+                    ? displayPhoneNumber
+                    : currentNumber
             ble.clearOptimisticOutgoingUI()
             status =
                 "Could not send cellular dial command to J6"

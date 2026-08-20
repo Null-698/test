@@ -782,3 +782,61 @@ The real CallKit call still provides:
 
 The custom UI uses public iOS 26 Liquid Glass APIs and SF Symbols. It does not
 depend on private Phone.app frameworks or private assets.
+
+
+# Reference-matched iOS 26 Phone UI
+
+This build replaces the earlier generic Liquid Glass styling with geometry and
+visual treatment derived from the supplied real Phone screenshots.
+
+## Dialer
+
+The supplied 1320×2868 screenshots correspond to 440×956 points at @3x.
+
+Measured geometry used by `NativeDialerView`:
+
+- digit centers X: approximately 108 / 220 / 332 pt
+- digit centers Y: approximately 311 / 419 / 527 / 635 pt
+- digit circle diameter: approximately 88.5 pt
+- call-button center Y: approximately 748.5 pt
+
+The digit buttons deliberately do **not** use Liquid Glass. The reference Phone
+screens show restrained filled circles. Light/dark colors, outlines and light
+mode shadows are handled dynamically.
+
+The bottom navigation uses native SwiftUI `TabView`. On iOS 18+ the trailing
+Search item uses `TabRole.search`, allowing iOS 26 to render the native pinned
+search treatment / Liquid Glass tab bar instead of drawing a fake replica.
+
+## Active call
+
+The custom call screen follows the supplied active Phone screenshot:
+
+- compact duration + caller identity at the top;
+- no large contact poster/avatar;
+- six controls anchored low:
+  Speaker / FaceTime(disabled) / Mute
+  More / End / Keypad;
+- subtle clear Liquid Glass circles on iOS 26;
+- real AVRoutePicker hit target behind the Speaker control;
+- live CallKit mute/end;
+- real BLE DTMF keypad;
+- More -> Minimize Call.
+
+The connected timestamp now belongs to `CallKitCoordinator`, so minimizing and
+reopening the custom call view does not reset the timer.
+
+## Failed call
+
+An outgoing call that ends before it reached ACTIVE now preserves a native-style
+Call failed screen with:
+
+- Call failed
+- formatted destination
+- Cancel
+- Call Back
+
+Call Back starts the same real CallKit/J6 outgoing flow again.
+
+No UDP audio, jitter/PLC, AirPods audio-session policy, answer handoff, Contacts
+matching, or Android protocol behavior was changed.

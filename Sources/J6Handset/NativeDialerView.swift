@@ -5,10 +5,19 @@ struct NativeDialerView: View {
     @EnvironmentObject private var ble: BLECallController
     @EnvironmentObject private var callKit: CallKitCoordinator
     @EnvironmentObject private var contacts: ContactResolver
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var resolvedName = ""
     @State private var lookupTask: Task<Void, Never>?
     @AppStorage("LastDialedNumber") private var lastDialedNumber = ""
+
+    // Geometry measured from the supplied real iOS 26 Phone screenshots.
+    private let referenceWidth: CGFloat = 440
+    private let referenceFirstKeyY: CGFloat = 311
+    private let referenceRowStep: CGFloat = 108
+    private let referenceColumnStep: CGFloat = 112
+    private let referenceKeyDiameter: CGFloat = 88.5
+    private let referenceCallY: CGFloat = 748.5
 
     private let keys: [(String, String)] = [
         ("1", ""),
@@ -27,32 +36,59 @@ struct NativeDialerView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack {
-                dialerBackground
+            let scale = min(
+                max(proxy.size.width / referenceWidth, 0.82),
+                1.08
+            )
 
-                VStack(spacing: 0) {
-                    Spacer(minLength: 28)
+            ZStack(alignment: .topLeading) {
+                Color(uiColor: .systemBackground)
+                    .ignoresSafeArea()
 
-                    numberArea
-                        .frame(height: 122)
-                        .padding(.horizontal, 24)
+                if !ble.dialNumber.isEmpty {
+                    numberArea(scale: scale)
+                        .frame(
+                            width: min(proxy.size.width - 36, 370 * scale),
+                            height: 82 * scale
+                        )
+                        .position(
+                            x: proxy.size.width / 2,
+                            y: 210 * scale
+                        )
+                }
 
-                    Spacer(minLength: 10)
+                keypad(scale: scale)
+                    .position(
+                        x: proxy.size.width / 2,
+                        y:
+                            (referenceFirstKeyY
+                             + referenceRowStep * 1.5)
+                            * scale
+                    )
 
-                    keypad
-                        .frame(maxWidth: 330)
-                        .padding(.horizontal, 24)
+                callButton(scale: scale)
+                    .position(
+                        x: proxy.size.width / 2,
+                        y: referenceCallY * scale
+                    )
 
-                    Spacer(minLength: 24)
-
-                    callRow
-                        .padding(.horizontal, 28)
-                        .padding(.bottom, max(12, proxy.safeAreaInsets.bottom + 4))
+                if !ble.dialNumber.isEmpty {
+                    deleteButton(scale: scale)
+                        .position(
+                            x:
+                                proxy.size.width / 2
+                                + referenceColumnStep * scale,
+                            y: referenceCallY * scale
+                        )
+                        .transition(.opacity.combined(with: .scale))
                 }
             }
+            .animation(
+                .snappy(duration: 0.18),
+                value: ble.dialNumber.isEmpty
+            )
         }
-        .navigationTitle("Keypad")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
         .onChange(of: ble.dialNumber) { _, number in
             resolveName(number)
         }
@@ -61,157 +97,143 @@ struct NativeDialerView: View {
         }
     }
 
-    private var dialerBackground: some View {
-        ZStack {
-            Color(uiColor: .systemBackground)
-
-            RadialGradient(
-                colors: [
-                    Color.accentColor.opacity(0.12),
-                    Color.clear
-                ],
-                center: .top,
-                startRadius: 24,
-                endRadius: 560
-            )
-        }
-        .ignoresSafeArea()
-    }
-
-    private var numberArea: some View {
-        VStack(spacing: 7) {
-            Spacer()
-
-            if ble.dialNumber.isEmpty {
-                Text("Enter a number")
-                    .font(.system(size: 29, weight: .regular))
-                    .foregroundStyle(.secondary)
-            } else {
-                Text(displayDialNumber)
-                    .font(.system(size: 35, weight: .regular, design: .rounded))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.55)
-                    .contentTransition(.numericText())
-            }
+    private func numberArea(scale: CGFloat) -> some View {
+        VStack(spacing: 4 * scale) {
+            Text(displayDialNumber)
+                .font(
+                    .system(
+                        size: 32 * scale,
+                        weight: .regular
+                    )
+                )
+                .foregroundStyle(.primary)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.50)
+                .contentTransition(.numericText())
 
             if !resolvedName.isEmpty {
                 Text(resolvedName)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .font(
+                        .system(
+                            size: 15 * scale,
+                            weight: .regular
+                        )
+                    )
+                    .foregroundStyle(Color.accentColor)
                     .lineLimit(1)
-                    .transition(.opacity)
-            } else if !ble.dialNumber.isEmpty {
-                Button("Add Number") { }
-                    .font(.subheadline)
-                    .foregroundStyle(.tint)
-                    .disabled(true)
-                    .opacity(0.8)
-            }
-
-            Spacer()
-        }
-    }
-
-    @ViewBuilder
-    private var keypad: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 15) {
-                keypadGrid
-            }
-        } else {
-            keypadGrid
-        }
-    }
-
-    private var keypadGrid: some View {
-        LazyVGrid(
-            columns: Array(
-                repeating: GridItem(.flexible(), spacing: 20),
-                count: 3
-            ),
-            spacing: 15
-        ) {
-            ForEach(Array(keys.enumerated()), id: \.offset) { _, key in
-                keypadButton(digit: key.0, letters: key.1)
+            } else {
+                Text("Add Number")
+                    .font(
+                        .system(
+                            size: 15 * scale,
+                            weight: .regular
+                        )
+                    )
+                    .foregroundStyle(Color.accentColor)
+                    .opacity(0.88)
             }
         }
     }
 
-    @ViewBuilder
+    private func keypad(scale: CGFloat) -> some View {
+        let gap =
+            (referenceColumnStep - referenceKeyDiameter)
+            * scale
+        let rowGap =
+            (referenceRowStep - referenceKeyDiameter)
+            * scale
+
+        return VStack(spacing: rowGap) {
+            ForEach(0..<4, id: \.self) { row in
+                HStack(spacing: gap) {
+                    ForEach(0..<3, id: \.self) { column in
+                        let key = keys[row * 3 + column]
+                        keypadButton(
+                            digit: key.0,
+                            letters: key.1,
+                            scale: scale
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private func keypadButton(
         digit: String,
-        letters: String
+        letters: String,
+        scale: CGFloat
     ) -> some View {
         Button {
             appendDigit(digit)
         } label: {
-            VStack(spacing: -1) {
+            VStack(spacing: -3 * scale) {
                 Text(digit)
-                    .font(.system(size: 31, weight: .regular, design: .rounded))
+                    .font(
+                        .system(
+                            size: 36 * scale,
+                            weight: .regular
+                        )
+                    )
                     .monospacedDigit()
 
                 Text(letters)
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .tracking(1.7)
-                    .frame(height: 11)
-                    .opacity(letters.isEmpty ? 0 : 0.88)
+                    .font(
+                        .system(
+                            size: 10.5 * scale,
+                            weight: .semibold
+                        )
+                    )
+                    .tracking(2.25 * scale)
+                    .frame(height: 13 * scale)
+                    .opacity(letters.isEmpty ? 0 : 1)
             }
             .foregroundStyle(.primary)
-            .frame(width: 78, height: 78)
+            .frame(
+                width: referenceKeyDiameter * scale,
+                height: referenceKeyDiameter * scale
+            )
+            .background(keyFill, in: Circle())
+            .overlay {
+                Circle()
+                    .stroke(
+                        keyStroke,
+                        lineWidth: 0.55
+                    )
+            }
+            .shadow(
+                color:
+                    colorScheme == .light
+                        ? Color.black.opacity(0.055)
+                        : .clear,
+                radius: 13 * scale,
+                y: 7 * scale
+            )
             .contentShape(Circle())
         }
-        .buttonStyle(DialKeyButtonStyle())
+        .buttonStyle(PhoneKeyPressStyle())
         .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.45)
+            LongPressGesture(minimumDuration: 0.43)
                 .onEnded { _ in
                     guard digit == "0" else { return }
+
                     if ble.dialNumber.last == "0" {
                         ble.dialNumber.removeLast()
                     }
+
                     ble.dialNumber.append("+")
                     haptic(.medium)
                 }
         )
         .accessibilityLabel(
-            letters.isEmpty ? digit : "\(digit), \(letters)"
+            letters.isEmpty
+                ? digit
+                : "\(digit), \(letters)"
         )
     }
 
-    private var callRow: some View {
-        ZStack {
-            HStack {
-                Spacer()
-
-                callButton
-
-                Spacer()
-            }
-
-            HStack {
-                Spacer()
-
-                if !ble.dialNumber.isEmpty {
-                    Button {
-                        ble.dialNumber.removeLast()
-                        haptic(.light)
-                    } label: {
-                        Image(systemName: "delete.left.fill")
-                            .font(.system(size: 24, weight: .regular))
-                            .foregroundStyle(.primary)
-                            .frame(width: 56, height: 56)
-                    }
-                    .buttonStyle(.plain)
-                    .transition(.opacity.combined(with: .scale))
-                    .accessibilityLabel("Delete")
-                }
-            }
-        }
-        .frame(height: 78)
-        .animation(.snappy(duration: 0.2), value: ble.dialNumber.isEmpty)
-    }
-
-    private var callButton: some View {
+    private func callButton(scale: CGFloat) -> some View {
         Button {
             if ble.dialNumber.isEmpty {
                 guard !lastDialedNumber.isEmpty else {
@@ -229,25 +251,98 @@ struct NativeDialerView: View {
             callKit.startOutgoing(number: ble.dialNumber)
         } label: {
             Image(systemName: "phone.fill")
-                .font(.system(size: 28, weight: .semibold))
+                .font(
+                    .system(
+                        size: 28 * scale,
+                        weight: .semibold
+                    )
+                )
                 .foregroundStyle(.white)
-                .frame(width: 74, height: 74)
+                .frame(
+                    width: 86 * scale,
+                    height: 86 * scale
+                )
+                .background(
+                    Color(uiColor: .systemGreen),
+                    in: Circle()
+                )
+                .overlay {
+                    Circle()
+                        .stroke(
+                            Color.white.opacity(
+                                colorScheme == .dark ? 0.36 : 0.18
+                            ),
+                            lineWidth: 0.8
+                        )
+                }
         }
-        .buttonStyle(GreenCallButtonStyle())
+        .buttonStyle(PhoneKeyPressStyle())
         .disabled(!ble.isConnected)
-        .opacity(ble.isConnected ? 1 : 0.48)
+        .opacity(ble.isConnected ? 1 : 0.42)
         .accessibilityLabel("Call")
     }
 
+    private func deleteButton(scale: CGFloat) -> some View {
+        Button {
+            guard !ble.dialNumber.isEmpty else { return }
+            ble.dialNumber.removeLast()
+            haptic(.light)
+        } label: {
+            Image(systemName: "delete.left.fill")
+                .font(
+                    .system(
+                        size: 25 * scale,
+                        weight: .regular
+                    )
+                )
+                .foregroundStyle(.primary)
+                .frame(
+                    width: 64 * scale,
+                    height: 64 * scale
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Delete")
+    }
+
+    private var keyFill: Color {
+        if colorScheme == .dark {
+            return Color(
+                red: 0.070,
+                green: 0.070,
+                blue: 0.073
+            )
+        }
+
+        return Color(
+            red: 0.988,
+            green: 0.988,
+            blue: 0.990
+        )
+    }
+
+    private var keyStroke: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.12)
+            : Color.white.opacity(0.90)
+    }
+
     private var displayDialNumber: String {
-        let basic = contacts.basicMetadata(for: ble.dialNumber)
+        let basic = contacts.basicMetadata(
+            for: ble.dialNumber
+        )
+
         return basic.formattedNumber.isEmpty
             ? ble.dialNumber
             : basic.formattedNumber
     }
 
     private func appendDigit(_ digit: String) {
-        guard ble.dialNumber.count < 32 else { return }
+        guard ble.dialNumber.count < 32 else {
+            return
+        }
+
         ble.dialNumber.append(digit)
         haptic(.light)
     }
@@ -261,67 +356,53 @@ struct NativeDialerView: View {
         }
 
         lookupTask = Task {
-            try? await Task.sleep(for: .milliseconds(180))
-            guard !Task.isCancelled else { return }
-            let metadata = await contacts.resolve(number: number)
+            try? await Task.sleep(
+                for: .milliseconds(180)
+            )
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            let metadata =
+                await contacts.resolve(number: number)
+
             guard !Task.isCancelled,
                   ble.dialNumber == number
-            else { return }
-            resolvedName = metadata.displayName ?? ""
+            else {
+                return
+            }
+
+            resolvedName =
+                metadata.displayName ?? ""
         }
     }
 
-    private func haptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle) {
-        UIImpactFeedbackGenerator(style: style).impactOccurred()
-    }
-}
-
-private struct DialKeyButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        if #available(iOS 26.0, *) {
-            configuration.label
-                .scaleEffect(configuration.isPressed ? 0.94 : 1)
-                .glassEffect(
-                    .regular.interactive(),
-                    in: .circle
-                )
-                .animation(
-                    .snappy(duration: 0.16),
-                    value: configuration.isPressed
-                )
-        } else {
-            configuration.label
-                .scaleEffect(configuration.isPressed ? 0.94 : 1)
-                .background(
-                    .thinMaterial,
-                    in: Circle()
-                )
-                .animation(
-                    .easeOut(duration: 0.12),
-                    value: configuration.isPressed
-                )
-        }
+    private func haptic(
+        _ style: UIImpactFeedbackGenerator.FeedbackStyle
+    ) {
+        UIImpactFeedbackGenerator(
+            style: style
+        ).impactOccurred()
     }
 }
 
-private struct GreenCallButtonStyle: ButtonStyle {
+private struct PhoneKeyPressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        if #available(iOS 26.0, *) {
-            configuration.label
-                .background(Color.green, in: Circle())
-                .glassEffect(
-                    .regular.tint(.green).interactive(),
-                    in: .circle
-                )
-                .scaleEffect(configuration.isPressed ? 0.94 : 1)
-                .animation(
-                    .snappy(duration: 0.16),
-                    value: configuration.isPressed
-                )
-        } else {
-            configuration.label
-                .background(Color.green, in: Circle())
-                .scaleEffect(configuration.isPressed ? 0.94 : 1)
-        }
+        configuration.label
+            .scaleEffect(
+                configuration.isPressed
+                    ? 0.955
+                    : 1
+            )
+            .opacity(
+                configuration.isPressed
+                    ? 0.72
+                    : 1
+            )
+            .animation(
+                .easeOut(duration: 0.09),
+                value: configuration.isPressed
+            )
     }
 }

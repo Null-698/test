@@ -1,16 +1,16 @@
+import AVFAudio
 import AVKit
 import SwiftUI
 import UIKit
 
 struct InAppCallView: View {
     @EnvironmentObject private var ble: BLECallController
-    @EnvironmentObject private var relay: RelayController
     @EnvironmentObject private var callKit: CallKitCoordinator
 
     let onMinimize: () -> Void
 
-    @State private var activeSince: Date?
     @State private var showingKeypad = false
+    @State private var showingMore = false
     @State private var enteredDigits = ""
 
     private let keypadKeys: [(String, String)] = [
@@ -33,27 +33,47 @@ struct InAppCallView: View {
             ZStack {
                 callBackground
 
-                if showingKeypad && ble.uiCallState == "ACTIVE" {
+                if showingKeypad &&
+                   ble.uiCallState == "ACTIVE" {
                     inCallKeypad(proxy: proxy)
-                        .transition(
-                            .asymmetric(
-                                insertion: .opacity.combined(with: .scale(scale: 0.98)),
-                                removal: .opacity
-                            )
-                        )
+                        .transition(.opacity)
                 } else {
-                    mainCallScreen(proxy: proxy)
+                    callFace(proxy: proxy)
                         .transition(.opacity)
                 }
             }
-            .ignoresSafeArea()
+            .ignoresSafeArea(edges: .all)
         }
-        .animation(.easeInOut(duration: 0.20), value: showingKeypad)
-        .onAppear {
-            updateActiveStart()
+        .preferredColorScheme(.dark)
+        .animation(
+            .easeInOut(duration: 0.18),
+            value: showingKeypad
+        )
+        .confirmationDialog(
+            "Call Options",
+            isPresented: $showingMore,
+            titleVisibility: .hidden
+        ) {
+            Button("Minimize Call") {
+                onMinimize()
+            }
+
+            if ble.uiCallState == "ACTIVE" {
+                Button(
+                    callKit.isMuted
+                        ? "Unmute"
+                        : "Mute"
+                ) {
+                    callKit.setMuted(
+                        !callKit.isMuted
+                    )
+                }
+            }
+
+            Button("Cancel", role: .cancel) { }
         }
-        .onChange(of: ble.uiCallState) { _, newState in
-            updateActiveStart()
+        .onChange(of: ble.uiCallState) {
+            _, newState in
 
             if newState != "ACTIVE" {
                 showingKeypad = false
@@ -62,360 +82,570 @@ struct InAppCallView: View {
         }
     }
 
-    // MARK: - Main call screen
+    // MARK: - Main active/ringing face
 
-    private func mainCallScreen(
+    private func callFace(
         proxy: GeometryProxy
     ) -> some View {
         VStack(spacing: 0) {
-            topBar
-                .padding(.horizontal, 18)
-                .padding(.top, max(8, proxy.safeAreaInsets.top + 4))
-
-            Spacer(minLength: 20)
-
-            identityArea
+            identityHeader
+                .padding(.top, max(
+                    proxy.safeAreaInsets.top + 34,
+                    72
+                ))
                 .padding(.horizontal, 24)
-
-            Spacer(minLength: 26)
-
-            controlsArea
-                .padding(.horizontal, 24)
-                .padding(.bottom, max(24, proxy.safeAreaInsets.bottom + 10))
-        }
-    }
-
-    private var topBar: some View {
-        HStack {
-            Button(action: onMinimize) {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-            }
-            .buttonStyle(CallGlassButtonStyle())
-            .accessibilityLabel("Minimize call")
 
             Spacer()
 
-            if callKit.systemCallPresent {
-                Image(systemName: "iphone.radiowaves.left.and.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.72))
-                    .frame(width: 44, height: 44)
-                    .accessibilityLabel("System CallKit call active")
+            if ble.uiCallState == "RINGING" {
+                incomingButtons
+                    .padding(
+                        .bottom,
+                        max(
+                            proxy.safeAreaInsets.bottom + 44,
+                            58
+                        )
+                    )
+            } else {
+                sixControlGrid
+                    .padding(
+                        .bottom,
+                        max(
+                            proxy.safeAreaInsets.bottom + 26,
+                            38
+                        )
+                    )
             }
         }
     }
 
-    private var identityArea: some View {
-        VStack(spacing: 18) {
-            callerAvatar
-
-            VStack(spacing: 6) {
-                Text(primaryDisplayText)
+    private var identityHeader: some View {
+        VStack(spacing: 6) {
+            if ble.uiCallState == "ACTIVE" {
+                TimelineView(
+                    .periodic(
+                        from: .now,
+                        by: 1
+                    )
+                ) { context in
+                    Text(durationText(now: context.date))
+                        .font(
+                            .system(
+                                size: 16,
+                                weight: .regular
+                            )
+                        )
+                        .foregroundStyle(
+                            .white.opacity(0.70)
+                        )
+                        .monospacedDigit()
+                }
+            } else {
+                Text(stateText)
                     .font(
                         .system(
-                            size: 36,
-                            weight: .semibold,
-                            design: .rounded
+                            size: 16,
+                            weight: .regular
                         )
                     )
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.55)
+                    .foregroundStyle(
+                        .white.opacity(0.70)
+                    )
+            }
 
-                if !secondaryDisplayText.isEmpty {
-                    Text(secondaryDisplayText)
-                        .font(.system(size: 17, weight: .regular))
-                        .foregroundStyle(.white.opacity(0.72))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
+            Text(primaryIdentity)
+                .font(
+                    .system(
+                        size:
+                            callKit.displayCallerName.isEmpty
+                                ? 28
+                                : 31,
+                        weight: .semibold
+                    )
+                )
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .minimumScaleFactor(0.64)
+                .multilineTextAlignment(.center)
+
+            if !secondaryIdentity.isEmpty {
+                Text(secondaryIdentity)
+                    .font(
+                        .system(
+                            size: 16,
+                            weight: .regular
+                        )
+                    )
+                    .foregroundStyle(
+                        .white.opacity(0.72)
+                    )
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var sixControlGrid: some View {
+        VStack(spacing: 22) {
+            HStack(spacing: 34) {
+                routeControl
+
+                phoneControl(
+                    title: "FaceTime",
+                    systemImage: "video.fill",
+                    enabled: false,
+                    selected: false
+                ) { }
+
+                phoneControl(
+                    title:
+                        callKit.isMuted
+                            ? "Unmute"
+                            : "Mute",
+                    systemImage:
+                        callKit.isMuted
+                            ? "mic.slash.fill"
+                            : "mic.slash",
+                    selected: callKit.isMuted
+                ) {
+                    callKit.setMuted(
+                        !callKit.isMuted
+                    )
+                }
+            }
+
+            HStack(spacing: 34) {
+                phoneControl(
+                    title: "More",
+                    systemImage: "ellipsis"
+                ) {
+                    showingMore = true
                 }
 
-                if ble.uiCallState == "ACTIVE" {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(durationText(now: context.date))
-                            .font(
-                                .system(
-                                    size: 16,
-                                    weight: .regular,
-                                    design: .rounded
-                                )
+                VStack(spacing: 8) {
+                    Button {
+                        callKit.endCurrentCall()
+                    } label: {
+                        Image(
+                            systemName:
+                                "phone.down.fill"
+                        )
+                        .font(
+                            .system(
+                                size: 26,
+                                weight: .semibold
                             )
-                            .foregroundStyle(.white.opacity(0.80))
-                            .monospacedDigit()
+                        )
+                        .foregroundStyle(.white)
+                        .frame(width: 72, height: 72)
+                        .background(
+                            Color(
+                                red: 0.80,
+                                green: 0.015,
+                                blue: 0.015
+                            ),
+                            in: Circle()
+                        )
                     }
-                } else {
-                    Text(stateLine)
-                        .font(.system(size: 16, weight: .regular))
-                        .foregroundStyle(.white.opacity(0.80))
+                    .buttonStyle(CallPressStyle())
+
+                    Text("End")
+                        .font(
+                            .system(
+                                size: 13,
+                                weight: .regular
+                            )
+                        )
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 82)
+
+                phoneControl(
+                    title: "Keypad",
+                    systemImage:
+                        "circle.grid.3x3.fill"
+                ) {
+                    guard ble.uiCallState == "ACTIVE"
+                    else {
+                        return
+                    }
+
+                    enteredDigits = ""
+                    showingKeypad = true
+                    impact()
                 }
             }
         }
+    }
+
+    private var routeControl: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                callGlassCircle
+
+                Image(
+                    systemName:
+                        "speaker.wave.3.fill"
+                )
+                .font(
+                    .system(
+                        size: 24,
+                        weight: .semibold
+                    )
+                )
+                .foregroundStyle(.white)
+
+                // Keep Apple's actual route picker as the hit target while
+                // matching the Phone screenshot's Speaker glyph.
+                NativeRoutePicker()
+                    .frame(width: 72, height: 72)
+                    .opacity(0.015)
+            }
+
+            Text("Speaker")
+                .font(
+                    .system(
+                        size: 13,
+                        weight: .regular
+                    )
+                )
+                .foregroundStyle(.white)
+        }
+        .frame(width: 82)
+        .accessibilityLabel("Audio route")
+    }
+
+    private func phoneControl(
+        title: String,
+        systemImage: String,
+        enabled: Bool = true,
+        selected: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        VStack(spacing: 8) {
+            Button(action: action) {
+                ZStack {
+                    if selected {
+                        Circle()
+                            .fill(Color.white)
+                            .frame(
+                                width: 72,
+                                height: 72
+                            )
+                    } else {
+                        callGlassCircle
+                    }
+
+                    Image(
+                        systemName: systemImage
+                    )
+                    .font(
+                        .system(
+                            size: 24,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        selected
+                            ? Color.black
+                            : Color.white
+                    )
+                }
+                .frame(width: 72, height: 72)
+            }
+            .buttonStyle(CallPressStyle())
+            .disabled(!enabled)
+            .opacity(enabled ? 1 : 0.25)
+
+            Text(title)
+                .font(
+                    .system(
+                        size: 13,
+                        weight: .regular
+                    )
+                )
+                .foregroundStyle(
+                    .white.opacity(
+                        enabled ? 1 : 0.58
+                    )
+                )
+        }
+        .frame(width: 82)
     }
 
     @ViewBuilder
-    private var controlsArea: some View {
-        if ble.uiCallState == "RINGING" {
-            incomingControls
+    private var callGlassCircle: some View {
+        if #available(iOS 26.0, *) {
+            Circle()
+                .fill(.clear)
+                .frame(width: 72, height: 72)
+                .glassEffect(
+                    .clear.interactive(),
+                    in: .circle
+                )
+                .overlay {
+                    Circle()
+                        .stroke(
+                            Color.white.opacity(0.16),
+                            lineWidth: 0.7
+                        )
+                }
         } else {
-            activeControls
+            Circle()
+                .fill(
+                    Color.white.opacity(0.075)
+                )
+                .frame(width: 72, height: 72)
+                .overlay {
+                    Circle()
+                        .stroke(
+                            Color.white.opacity(0.16),
+                            lineWidth: 0.7
+                        )
+                }
         }
     }
 
-    private var incomingControls: some View {
-        HStack(spacing: 74) {
-            callAction(
+    // MARK: - Incoming
+
+    private var incomingButtons: some View {
+        HStack {
+            largeCallAction(
                 title: "Decline",
-                systemImage: "phone.down.fill",
-                tint: .red,
-                prominent: true
+                systemImage: "xmark",
+                fill: Color(
+                    red: 0.62,
+                    green: 0.62,
+                    blue: 0.64
+                )
             ) {
                 callKit.endCurrentCall()
             }
 
-            callAction(
+            Spacer()
+
+            largeCallAction(
                 title: "Accept",
                 systemImage: "phone.fill",
-                tint: .green,
-                prominent: true
+                fill: Color(uiColor: .systemGreen)
             ) {
                 callKit.answerCurrentCall()
             }
         }
+        .padding(.horizontal, 54)
     }
 
-    private var activeControls: some View {
-        VStack(spacing: 30) {
-            Group {
-                if #available(iOS 26.0, *) {
-                    GlassEffectContainer(spacing: 18) {
-                        HStack(spacing: 24) {
-                            muteControl
-                            keypadControl
-                            routePickerControl
-                        }
-                    }
-                } else {
-                    HStack(spacing: 24) {
-                        muteControl
-                        keypadControl
-                        routePickerControl
-                    }
-                }
-            }
-
-            Button {
-                callKit.endCurrentCall()
-            } label: {
-                Image(systemName: "phone.down.fill")
-                    .font(.system(size: 29, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 78, height: 78)
-            }
-            .buttonStyle(EndCallButtonStyle())
-            .accessibilityLabel("End call")
-        }
-    }
-
-    private var muteControl: some View {
-        callAction(
-            title: callKit.isMuted ? "Unmute" : "Mute",
-            systemImage:
-                callKit.isMuted
-                    ? "mic.slash.fill"
-                    : "mic.fill",
-            selected: callKit.isMuted
-        ) {
-            callKit.setMuted(!callKit.isMuted)
-        }
-    }
-
-    private var keypadControl: some View {
-        callAction(
-            title: "Keypad",
-            systemImage: "circle.grid.3x3.fill"
-        ) {
-            guard ble.uiCallState == "ACTIVE" else {
-                return
-            }
-            enteredDigits = ""
-            showingKeypad = true
-            UIImpactFeedbackGenerator(
-                style: .light
-            ).impactOccurred()
-        }
-    }
-
-    private var routePickerControl: some View {
-        VStack(spacing: 9) {
-            ZStack {
-                if #available(iOS 26.0, *) {
-                    Circle()
-                        .fill(.clear)
-                        .frame(width: 72, height: 72)
-                        .glassEffect(
-                            .regular.interactive(),
-                            in: .circle
+    private func largeCallAction(
+        title: String,
+        systemImage: String,
+        fill: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        VStack(spacing: 10) {
+            Button(action: action) {
+                Image(systemName: systemImage)
+                    .font(
+                        .system(
+                            size: 29,
+                            weight: .medium
                         )
-                } else {
-                    Circle()
-                        .fill(.thinMaterial)
-                        .frame(width: 72, height: 72)
-                }
-
-                NativeRoutePicker()
-                    .frame(width: 72, height: 72)
+                    )
+                    .foregroundStyle(.white)
+                    .frame(width: 82, height: 82)
+                    .background(fill, in: Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(
+                                Color.white.opacity(0.52),
+                                lineWidth: 0.8
+                            )
+                    }
             }
+            .buttonStyle(CallPressStyle())
 
-            Text("Audio")
-                .font(.system(size: 13, weight: .regular))
-                .foregroundStyle(.white.opacity(0.94))
+            Text(title)
+                .font(
+                    .system(
+                        size: 16,
+                        weight: .regular
+                    )
+                )
+                .foregroundStyle(.white)
         }
-        .frame(width: 88)
     }
 
-    // MARK: - In-call keypad
+    // MARK: - In-call DTMF
 
     private func inCallKeypad(
         proxy: GeometryProxy
     ) -> some View {
         VStack(spacing: 0) {
-            HStack {
-                Button {
-                    showingKeypad = false
-                    enteredDigits = ""
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(CallGlassButtonStyle())
-
-                Spacer()
-            }
-            .padding(.horizontal, 18)
-            .padding(.top, max(8, proxy.safeAreaInsets.top + 4))
-
-            Spacer(minLength: 12)
-
             VStack(spacing: 5) {
                 Text(
                     enteredDigits.isEmpty
-                        ? primaryDisplayText
+                        ? primaryIdentity
                         : enteredDigits
                 )
                 .font(
                     .system(
-                        size: enteredDigits.isEmpty ? 25 : 34,
-                        weight: .regular,
-                        design: .rounded
+                        size:
+                            enteredDigits.isEmpty
+                                ? 26
+                                : 34,
+                        weight: .regular
                     )
                 )
                 .foregroundStyle(.white)
                 .monospacedDigit()
                 .lineLimit(1)
-                .minimumScaleFactor(0.55)
+                .minimumScaleFactor(0.60)
 
                 Text(
                     enteredDigits.isEmpty
                         ? "Keypad"
-                        : primaryDisplayText
+                        : primaryIdentity
                 )
-                .font(.system(size: 15, weight: .regular))
-                .foregroundStyle(.white.opacity(0.62))
+                .font(
+                    .system(
+                        size: 15,
+                        weight: .regular
+                    )
+                )
+                .foregroundStyle(
+                    .white.opacity(0.64)
+                )
                 .lineLimit(1)
             }
-            .frame(height: 72)
+            .padding(
+                .top,
+                max(
+                    proxy.safeAreaInsets.top + 46,
+                    82
+                )
+            )
 
-            Spacer(minLength: 12)
+            Spacer()
 
-            Group {
-                if #available(iOS 26.0, *) {
-                    GlassEffectContainer(spacing: 14) {
-                        dtmfGrid
+            VStack(spacing: 14) {
+                ForEach(0..<4, id: \.self) { row in
+                    HStack(spacing: 22) {
+                        ForEach(
+                            0..<3,
+                            id: \.self
+                        ) { column in
+                            let key =
+                                keypadKeys[
+                                    row * 3
+                                    + column
+                                ]
+
+                            dtmfButton(
+                                digit: key.0,
+                                letters: key.1
+                            )
+                        }
                     }
-                } else {
-                    dtmfGrid
                 }
             }
-            .frame(maxWidth: 320)
-            .padding(.horizontal, 26)
 
-            Spacer(minLength: 20)
+            Spacer()
 
-            HStack(spacing: 34) {
+            HStack(spacing: 38) {
                 Button {
                     showingKeypad = false
                     enteredDigits = ""
                 } label: {
                     Text("Hide")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(
+                            .system(
+                                size: 16,
+                                weight: .semibold
+                            )
+                        )
                         .foregroundStyle(.white)
-                        .frame(width: 72, height: 52)
+                        .frame(
+                            width: 76,
+                            height: 54
+                        )
                 }
-                .buttonStyle(CallGlassCapsuleButtonStyle())
+                .buttonStyle(CallCapsuleStyle())
 
                 Button {
                     callKit.endCurrentCall()
                 } label: {
-                    Image(systemName: "phone.down.fill")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 68, height: 68)
+                    Image(
+                        systemName:
+                            "phone.down.fill"
+                    )
+                    .font(
+                        .system(
+                            size: 25,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(.white)
+                    .frame(width: 70, height: 70)
+                    .background(
+                        Color.red,
+                        in: Circle()
+                    )
                 }
-                .buttonStyle(EndCallButtonStyle())
+                .buttonStyle(CallPressStyle())
             }
-            .padding(.bottom, max(24, proxy.safeAreaInsets.bottom + 10))
+            .padding(
+                .bottom,
+                max(
+                    proxy.safeAreaInsets.bottom + 28,
+                    42
+                )
+            )
         }
     }
 
-    private var dtmfGrid: some View {
-        LazyVGrid(
-            columns: Array(
-                repeating: GridItem(.flexible(), spacing: 20),
-                count: 3
-            ),
-            spacing: 16
-        ) {
-            ForEach(
-                Array(keypadKeys.enumerated()),
-                id: \.offset
-            ) { _, key in
-                Button {
-                    sendDtmf(key.0)
-                } label: {
-                    VStack(spacing: 1) {
-                        Text(key.0)
-                            .font(
-                                .system(
-                                    size: 30,
-                                    weight: .regular,
-                                    design: .rounded
-                                )
-                            )
-                            .monospacedDigit()
+    private func dtmfButton(
+        digit: String,
+        letters: String
+    ) -> some View {
+        Button {
+            sendDtmf(digit)
+        } label: {
+            VStack(spacing: -2) {
+                Text(digit)
+                    .font(
+                        .system(
+                            size: 34,
+                            weight: .regular
+                        )
+                    )
+                    .monospacedDigit()
 
-                        Text(key.1)
-                            .font(
-                                .system(
-                                    size: 9,
-                                    weight: .semibold
-                                )
-                            )
-                            .tracking(1.6)
-                            .frame(height: 10)
-                    }
-                    .foregroundStyle(.white)
-                    .frame(width: 72, height: 72)
-                }
-                .buttonStyle(DtmfGlassButtonStyle())
-                .accessibilityLabel("DTMF \(key.0)")
+                Text(letters)
+                    .font(
+                        .system(
+                            size: 10,
+                            weight: .semibold
+                        )
+                    )
+                    .tracking(2.0)
+                    .frame(height: 12)
+                    .opacity(
+                        letters.isEmpty ? 0 : 1
+                    )
+            }
+            .foregroundStyle(.white)
+            .frame(width: 76, height: 76)
+            .background(
+                Color.white.opacity(0.10),
+                in: Circle()
+            )
+            .overlay {
+                Circle()
+                    .stroke(
+                        Color.white.opacity(0.15),
+                        lineWidth: 0.7
+                    )
             }
         }
+        .buttonStyle(CallPressStyle())
     }
 
     private func sendDtmf(_ digit: String) {
@@ -425,145 +655,23 @@ struct InAppCallView: View {
 
         if ble.sendDtmf(digit) {
             enteredDigits.append(digit)
+
             if enteredDigits.count > 24 {
                 enteredDigits.removeFirst(
                     enteredDigits.count - 24
                 )
             }
 
-            UIImpactFeedbackGenerator(
-                style: .light
-            ).impactOccurred()
+            impact()
         } else {
             UINotificationFeedbackGenerator()
                 .notificationOccurred(.error)
         }
     }
 
-    // MARK: - Reusable controls / display
+    // MARK: - Display
 
-    private func callAction(
-        title: String,
-        systemImage: String,
-        tint: Color? = nil,
-        prominent: Bool = false,
-        selected: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        VStack(spacing: 9) {
-            Button(action: action) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(
-                        selected ? Color.black : Color.white
-                    )
-                    .frame(width: 72, height: 72)
-            }
-            .buttonStyle(
-                CallControlButtonStyle(
-                    tint:
-                        selected
-                            ? Color.white
-                            : tint,
-                    prominent: prominent
-                )
-            )
-
-            Text(title)
-                .font(.system(size: 13, weight: .regular))
-                .foregroundStyle(.white.opacity(0.94))
-        }
-        .frame(width: 88)
-    }
-
-    @ViewBuilder
-    private var callerAvatar: some View {
-        if let data = callKit.contactThumbnailImageData,
-           let image = UIImage(data: data) {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 132, height: 132)
-                .clipShape(Circle())
-                .overlay(
-                    Circle().stroke(
-                        Color.white.opacity(0.16),
-                        lineWidth: 0.8
-                    )
-                )
-                .shadow(
-                    color: .black.opacity(0.24),
-                    radius: 24,
-                    y: 10
-                )
-        } else {
-            Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 124))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.white.opacity(0.92))
-        }
-    }
-
-    @ViewBuilder
-    private var callBackground: some View {
-        if let data = callKit.contactThumbnailImageData,
-           let image = UIImage(data: data) {
-            ZStack {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .scaleEffect(1.45)
-                    .blur(radius: 54)
-                    .saturation(0.82)
-                    .ignoresSafeArea()
-
-                LinearGradient(
-                    colors: [
-                        Color.black.opacity(0.18),
-                        Color.black.opacity(0.42),
-                        Color.black.opacity(0.76)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-            }
-        } else {
-            ZStack {
-                LinearGradient(
-                    colors: [
-                        Color(
-                            red: 0.16,
-                            green: 0.19,
-                            blue: 0.25
-                        ),
-                        Color(
-                            red: 0.055,
-                            green: 0.065,
-                            blue: 0.095
-                        ),
-                        .black
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
-
-                RadialGradient(
-                    colors: [
-                        Color.white.opacity(0.11),
-                        .clear
-                    ],
-                    center: .top,
-                    startRadius: 24,
-                    endRadius: 460
-                )
-                .ignoresSafeArea()
-            }
-        }
-    }
-
-    private var primaryDisplayText: String {
+    private var primaryIdentity: String {
         if !callKit.displayCallerName.isEmpty {
             return callKit.displayCallerName
         }
@@ -576,11 +684,16 @@ struct InAppCallView: View {
             return ble.uiCallerID
         }
 
+        if !ble.dialNumber.isEmpty {
+            return ble.dialNumber
+        }
+
         return "Unknown Caller"
     }
 
-    private var secondaryDisplayText: String {
-        guard !callKit.displayCallerName.isEmpty else {
+    private var secondaryIdentity: String {
+        guard !callKit.displayCallerName.isEmpty
+        else {
             return ""
         }
 
@@ -591,14 +704,12 @@ struct InAppCallView: View {
         return ble.uiCallerID
     }
 
-    private var stateLine: String {
+    private var stateText: String {
         switch ble.uiCallState {
         case "RINGING":
             return "Incoming Call"
         case "CONNECTING", "DIALING":
             return "calling…"
-        case "ACTIVE":
-            return durationText(now: Date())
         case "HOLDING":
             return "On Hold"
         case "DISCONNECTING":
@@ -608,168 +719,106 @@ struct InAppCallView: View {
         }
     }
 
-    private func updateActiveStart() {
-        if ble.uiCallState == "ACTIVE" {
-            if activeSince == nil {
-                activeSince = Date()
-            }
-        } else if ble.uiCallState == "IDLE" ||
-                  ble.uiCallState == "DISCONNECTED" {
-            activeSince = nil
-        }
-    }
-
     private func durationText(now: Date) -> String {
-        guard let activeSince else {
+        guard let start = callKit.connectedAt
+        else {
             return "00:00"
         }
 
-        let seconds = max(
+        let total = max(
             0,
-            Int(now.timeIntervalSince(activeSince))
+            Int(now.timeIntervalSince(start))
         )
+
+        if total >= 3600 {
+            return String(
+                format:
+                    "%d:%02d:%02d",
+                total / 3600,
+                (total / 60) % 60,
+                total % 60
+            )
+        }
 
         return String(
             format: "%02d:%02d",
-            seconds / 60,
-            seconds % 60
+            total / 60,
+            total % 60
         )
     }
-}
 
-// MARK: - Styles
-
-private struct CallGlassButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        Group {
-            if #available(iOS 26.0, *) {
-                configuration.label
-                    .glassEffect(
-                        .regular.interactive(),
-                        in: .circle
+    private var callBackground: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(
+                        red: 0.020,
+                        green: 0.22,
+                        blue: 0.27
+                    ),
+                    Color(
+                        red: 0.015,
+                        green: 0.34,
+                        blue: 0.30
+                    ),
+                    Color(
+                        red: 0.015,
+                        green: 0.24,
+                        blue: 0.36
                     )
-            } else {
-                configuration.label
-                    .background(.thinMaterial, in: Circle())
-            }
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            RadialGradient(
+                colors: [
+                    Color(
+                        red: 0.06,
+                        green: 0.62,
+                        blue: 0.43
+                    ).opacity(0.35),
+                    .clear
+                ],
+                center: .bottomLeading,
+                startRadius: 20,
+                endRadius: 560
+            )
+
+            RadialGradient(
+                colors: [
+                    Color(
+                        red: 0.02,
+                        green: 0.39,
+                        blue: 0.70
+                    ).opacity(0.28),
+                    .clear
+                ],
+                center: .bottomTrailing,
+                startRadius: 20,
+                endRadius: 520
+            )
+
+            Rectangle()
+                .fill(
+                    Color.black.opacity(0.14)
+                )
         }
-        .scaleEffect(configuration.isPressed ? 0.94 : 1)
-        .animation(
-            .easeOut(duration: 0.12),
-            value: configuration.isPressed
-        )
+    }
+
+    private func impact() {
+        UIImpactFeedbackGenerator(
+            style: .light
+        ).impactOccurred()
     }
 }
 
-private struct CallGlassCapsuleButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        Group {
-            if #available(iOS 26.0, *) {
-                configuration.label
-                    .glassEffect(
-                        .regular.interactive(),
-                        in: .capsule
-                    )
-            } else {
-                configuration.label
-                    .background(
-                        .thinMaterial,
-                        in: Capsule()
-                    )
-            }
-        }
-        .scaleEffect(configuration.isPressed ? 0.96 : 1)
-    }
-}
-
-private struct CallControlButtonStyle: ButtonStyle {
-    let tint: Color?
-    let prominent: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        Group {
-            if #available(iOS 26.0, *) {
-                configuration.label
-                    .glassEffect(
-                        tint.map {
-                            .regular
-                                .tint($0)
-                                .interactive()
-                        }
-                        ?? .regular.interactive(),
-                        in: .circle
-                    )
-            } else {
-                configuration.label
-                    .background(
-                        tint?.opacity(
-                            prominent ? 0.96 : 0.86
-                        )
-                        ?? Color.white.opacity(0.16),
-                        in: Circle()
-                    )
-            }
-        }
-        .scaleEffect(configuration.isPressed ? 0.94 : 1)
-        .animation(
-            .easeOut(duration: 0.12),
-            value: configuration.isPressed
-        )
-    }
-}
-
-private struct DtmfGlassButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        Group {
-            if #available(iOS 26.0, *) {
-                configuration.label
-                    .glassEffect(
-                        .regular.interactive(),
-                        in: .circle
-                    )
-            } else {
-                configuration.label
-                    .background(
-                        Color.white.opacity(0.16),
-                        in: Circle()
-                    )
-            }
-        }
-        .scaleEffect(configuration.isPressed ? 0.92 : 1)
-        .animation(
-            .easeOut(duration: 0.10),
-            value: configuration.isPressed
-        )
-    }
-}
-
-private struct EndCallButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        Group {
-            if #available(iOS 26.0, *) {
-                configuration.label
-                    .background(Color.red, in: Circle())
-                    .glassEffect(
-                        .regular
-                            .tint(.red)
-                            .interactive(),
-                        in: .circle
-                    )
-            } else {
-                configuration.label
-                    .background(Color.red, in: Circle())
-            }
-        }
-        .scaleEffect(configuration.isPressed ? 0.94 : 1)
-        .animation(
-            .easeOut(duration: 0.10),
-            value: configuration.isPressed
-        )
-    }
-}
+// MARK: - Native audio route picker
 
 private struct NativeRoutePicker: UIViewRepresentable {
-    func makeUIView(context: Context) -> AVRoutePickerView {
+    func makeUIView(
+        context: Context
+    ) -> AVRoutePickerView {
         let view = AVRoutePickerView()
         view.prioritizesVideoDevices = false
         view.activeTintColor = .white
@@ -781,4 +830,55 @@ private struct NativeRoutePicker: UIViewRepresentable {
         _ uiView: AVRoutePickerView,
         context: Context
     ) { }
+}
+
+// MARK: - Button styles
+
+private struct CallPressStyle: ButtonStyle {
+    func makeBody(
+        configuration: Configuration
+    ) -> some View {
+        configuration.label
+            .scaleEffect(
+                configuration.isPressed
+                    ? 0.94
+                    : 1
+            )
+            .opacity(
+                configuration.isPressed
+                    ? 0.80
+                    : 1
+            )
+            .animation(
+                .easeOut(duration: 0.09),
+                value: configuration.isPressed
+            )
+    }
+}
+
+private struct CallCapsuleStyle: ButtonStyle {
+    func makeBody(
+        configuration: Configuration
+    ) -> some View {
+        Group {
+            if #available(iOS 26.0, *) {
+                configuration.label
+                    .glassEffect(
+                        .clear.interactive(),
+                        in: .capsule
+                    )
+            } else {
+                configuration.label
+                    .background(
+                        Color.white.opacity(0.10),
+                        in: Capsule()
+                    )
+            }
+        }
+        .scaleEffect(
+            configuration.isPressed
+                ? 0.96
+                : 1
+        )
+    }
 }
