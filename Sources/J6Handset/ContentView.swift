@@ -74,87 +74,43 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
     private var rootTabs: some View {
-        if #available(iOS 18.0, *) {
-            TabView(selection: $selectedTab) {
-                Tab(
-                    "Calls",
-                    systemImage: "clock",
-                    value: RootTab.calls
-                ) {
-                    gatewayScreen
-                }
-
-                Tab(
-                    "Contacts",
-                    systemImage:
-                        "person.crop.circle",
-                    value: RootTab.contacts
-                ) {
-                    contactsScreen
-                }
-
-                Tab(
-                    "Keypad",
-                    systemImage:
-                        "circle.grid.3x3",
-                    value: RootTab.keypad
-                ) {
-                    dialerScreen
-                }
-
-                Tab(
-                    value: RootTab.search,
-                    role: .search
-                ) {
-                    searchScreen
-                }
-            }
-            .tint(.blue)
-        } else {
-            TabView(selection: $selectedTab) {
+        TabView(selection: $selectedTab) {
+            Tab(
+                "Calls",
+                systemImage: "clock",
+                value: RootTab.calls
+            ) {
                 gatewayScreen
-                    .tabItem {
-                        Label(
-                            "Calls",
-                            systemImage: "clock"
-                        )
-                    }
-                    .tag(RootTab.calls)
-
-                contactsScreen
-                    .tabItem {
-                        Label(
-                            "Contacts",
-                            systemImage:
-                                "person.crop.circle"
-                        )
-                    }
-                    .tag(RootTab.contacts)
-
-                dialerScreen
-                    .tabItem {
-                        Label(
-                            "Keypad",
-                            systemImage:
-                                "circle.grid.3x3"
-                        )
-                    }
-                    .tag(RootTab.keypad)
-
-                searchScreen
-                    .tabItem {
-                        Label(
-                            "Search",
-                            systemImage:
-                                "magnifyingglass"
-                        )
-                    }
-                    .tag(RootTab.search)
             }
-            .tint(.blue)
+
+            Tab(
+                "Contacts",
+                systemImage: "person.crop.circle",
+                value: RootTab.contacts
+            ) {
+                contactsScreen
+            }
+
+            Tab(
+                "Keypad",
+                systemImage: "circle.grid.3x3",
+                value: RootTab.keypad
+            ) {
+                dialerScreen
+            }
+
+            // Apple specifically recommends a semantic search tab.
+            // On iOS 26 the system pins it separately at the trailing edge
+            // and gives it the current Liquid Glass search presentation.
+            Tab(
+                value: RootTab.search,
+                role: .search
+            ) {
+                searchScreen
+            }
         }
+        .tabBarMinimizeBehavior(.never)
     }
 
     private var dialerScreen: some View {

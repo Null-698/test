@@ -840,3 +840,51 @@ Call Back starts the same real CallKit/J6 outgoing flow again.
 
 No UDP audio, jitter/PLC, AirPods audio-session policy, answer handoff, Contacts
 matching, or Android protocol behavior was changed.
+
+
+# iOS 26 SDK-enforced native Liquid Glass revision
+
+This project is intentionally iOS 26-only:
+
+```swift
+// swift-tools-version: 6.2
+platforms: [.iOS(.v26)]
+```
+
+It uses iOS 26 SwiftUI APIs directly:
+- native `TabView` / `Tab(role: .search)`
+- `.tabBarMinimizeBehavior(.never)`
+- `.buttonStyle(.glass)`
+- `.buttonStyle(.glass(.clear))`
+- `.buttonStyle(.glassProminent)`
+- `GlassEffectContainer`
+
+There is no iOS 18 navigation fallback in this build.
+
+`Info.plist` explicitly sets:
+
+```xml
+<key>UIDesignRequiresCompatibility</key>
+<false/>
+```
+
+If this source fails to compile because the iOS 26 APIs are unknown, the
+installed xtool Darwin SDK was generated from an older Xcode XIP. Regenerate it
+from Xcode 26.x, then rebuild.
+
+Run before building:
+
+```bash
+./check-ios26-sdk.sh
+```
+
+## DTMF
+
+The in-app keypad no longer calls BLE directly. It requests a real
+`CXPlayDTMFCallAction(.singleTone)`. CallKit therefore provides the same local
+DTMF feedback as the native system keypad, and the provider delegate forwards
+the digit to the J6.
+
+The matching Android patch disables the J6's own local Telecom DTMF tone while
+leaving network DTMF signaling enabled. Install both matching patches for the
+distortion fix.

@@ -233,6 +233,50 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         )
     }
 
+    @discardableResult
+    func playDtmf(_ rawDigit: String) -> Bool {
+        guard let uuid = currentCallUUID,
+              ble.callState == "ACTIVE"
+        else {
+            status = "DTMF requires an active CallKit call."
+            return false
+        }
+
+        let digit = rawDigit.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+
+        guard digit.count == 1,
+              digit.allSatisfy({
+                  $0.isNumber || $0 == "*" || $0 == "#"
+              })
+        else {
+            status = "Invalid DTMF digit."
+            return false
+        }
+
+        // Submit the same CXPlayDTMFCallAction used by the native system
+        // in-call keypad. CallKit provides the local audible DTMF feedback;
+        // provider(_:perform:) below forwards the digit to the J6 network call.
+        let action = CXPlayDTMFCallAction(
+            call: uuid,
+            digits: digit,
+            type: .singleTone
+        )
+
+        request(
+            CXTransaction(action: action),
+            failure: { [weak self] error in
+                guard let self else { return }
+                self.status =
+                    "DTMF CallKit action failed: "
+                    + self.describeCallKitError(error)
+            }
+        )
+
+        return true
+    }
+
     func dismissFailedOutgoingCall() {
         failedOutgoingNumber = nil
     }
