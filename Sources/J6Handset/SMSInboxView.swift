@@ -952,7 +952,7 @@ private struct GrowingSMSComposerTextView: UIViewRepresentable {
     }
 }
 
-private struct SMSComposeView: View {
+struct SMSComposeView: View {
     @EnvironmentObject private var sms: SMSController
     @EnvironmentObject private var ble: BLECallController
     @EnvironmentObject private var contacts: ContactResolver

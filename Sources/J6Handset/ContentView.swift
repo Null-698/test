@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var callScreenMinimized = false
     @State private var selectedContact: CellularContactSelection?
     @State private var pendingContactAction: CellularContactAction?
+    @State private var contactComposeRequest: ContactComposeRequest?
 
     var body: some View {
         ZStack {
@@ -151,6 +152,14 @@ struct ContentView: View {
             .easeInOut(duration: 0.18),
             value: callKit.failedOutgoingNumber
         )
+        .sheet(item: $contactComposeRequest) { request in
+            SMSComposeView(
+                initialRecipient: request.recipient
+            )
+            .environmentObject(sms)
+            .environmentObject(ble)
+            .environmentObject(contacts)
+        }
         .onChange(of: ble.uiCallState) {
             oldState,
             newState in
@@ -635,6 +644,7 @@ struct ContentView: View {
     private func dismissContactsFlow() {
         selectedContact = nil
         pendingContactAction = nil
+        contactComposeRequest = nil
     }
 
     private func performPendingContactAction() {
@@ -668,10 +678,16 @@ struct ContentView: View {
                 return
             }
 
-            selectedTab = .messages
-            sms.requestCompose(to: recipient)
+            contactComposeRequest = ContactComposeRequest(
+                recipient: recipient
+            )
         }
     }
+}
+
+private struct ContactComposeRequest: Identifiable {
+    let id = UUID()
+    let recipient: String
 }
 
 private enum RootTab: Hashable {
