@@ -3,6 +3,7 @@ import CallKit
 import Combine
 import Foundation
 import UIKit
+import UserNotifications
 
 @MainActor
 final class CallKitCoordinator: NSObject, ObservableObject {
@@ -10,6 +11,13 @@ final class CallKitCoordinator: NSObject, ObservableObject {
     enum Direction {
         case incoming
         case outgoing
+    }
+
+    private struct HistoryContext {
+        var number: String
+        let direction: CallHistoryStore.Direction
+        let startedAt: Date
+        var connectedAt: Date?
     }
 
     @Published private(set) var status = "CallKit ready"
@@ -34,6 +42,7 @@ final class CallKitCoordinator: NSObject, ObservableObject {
     private let ble: BLECallController
     private let relay: RelayController
     private let contacts: ContactResolver
+    private let callHistory: CallHistoryStore
     private let provider: CXProvider
     private let callController = CXCallController()
 
@@ -44,26 +53,50 @@ final class CallKitCoordinator: NSObject, ObservableObject {
     private var previousCellularState = "IDLE"
     private var outgoingConnectingReported = false
     private var outgoingConnectedReported = false
-    private var localEndRequested = false
+    private var currentCallEverActive = false
+    private var outgoingCarrierStateSeen = false
     private var incomingReportTask: Task<Void, Never>?
+    private var remoteCallUUIDs: [Int: UUID] = [:]
+    private var remoteCallIDs: [UUID: Int] = [:]
+    private var pendingRemoteIncomingReports: Set<Int> = []
+    private var locallyEndingUUIDs: Set<UUID> = []
+    private var pendingOutgoingStartUUIDs: Set<UUID> = []
+    private var cancelledOutgoingStartUUIDs: Set<UUID> = []
+    private var answeredIncomingUUIDs: Set<UUID> = []
+    private var previousRemoteCallStates: [Int: String] = [:]
+    private var historyContexts: [UUID: HistoryContext] = [:]
 
     init(
         ble: BLECallController,
         relay: RelayController,
-        contacts: ContactResolver
+        contacts: ContactResolver,
+        callHistory: CallHistoryStore
     ) {
         self.ble = ble
         self.relay = relay
         self.contacts = contacts
+        self.callHistory = callHistory
 
         let configuration = CXProviderConfiguration()
+        // Best-effort invisible provider-name workaround. `localizedName` is
+        // deprecated/no-longer-supported on iOS 26, so use KVC to avoid a
+        // deprecated-symbol warning while still covering system versions/UI
+        // paths that continue to read the legacy provider label. Do not make
+        // CFBundleDisplayName invisible because that would also affect the app.
+        configuration.setValue("\u{200B}", forKey: "localizedName")
         configuration.supportsVideo = false
-        configuration.maximumCallGroups = 1
+        // Call waiting is two separate calls, not a conference group.
+        // Allow two simultaneous groups of one call each; grouping itself
+        // remains disabled in CXCallUpdate.
+        configuration.maximumCallGroups = 2
         configuration.maximumCallsPerCallGroup = 1
         configuration.supportedHandleTypes = [.phoneNumber]
         configuration.includesCallsInRecents = true
-        configuration.iconTemplateImageData =
-            Self.makeProviderIconData()
+        // iOS 26 owns provider identity in the system call UI. Do not add a
+        // custom provider glyph here; let CallKit render its native chrome.
+        // Per-caller identity is supplied through the real phone-number handle
+        // below so the system can perform its own Contacts/photo lookup.
+        configuration.iconTemplateImageData = nil
 
         provider = CXProvider(configuration: configuration)
 
@@ -102,6 +135,8 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         callKitAvailable = true
         failedOutgoingNumber = nil
         connectedAt = nil
+        currentCallEverActive = false
+        outgoingCarrierStateSeen = false
 
         let basicMetadata =
             contacts.basicMetadata(for: number)
@@ -114,10 +149,10 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         )
 
         currentCallUUID = uuid
+        pendingOutgoingStartUUIDs.insert(uuid)
         persistCallUUID(uuid)
         currentDirection = .outgoing
         currentNumber = number
-        localEndRequested = false
         outgoingConnectingReported = false
         outgoingConnectedReported = false
 
@@ -131,6 +166,18 @@ final class CallKitCoordinator: NSObject, ObservableObject {
             CXTransaction(action: action),
             failure: { [weak self] error in
                 guard let self else { return }
+
+                self.pendingOutgoingStartUUIDs.remove(uuid)
+                let wasCancelled =
+                    self.cancelledOutgoingStartUUIDs.remove(uuid) != nil
+
+                // Ending immediately after tapping Call can make the pending
+                // CXStartCallAction fail. That failure is cancellation, not a
+                // reason to fall back to a direct BLE dial.
+                if wasCancelled || self.currentCallUUID != uuid {
+                    self.finishCancelledOutgoingSetup(uuid: uuid)
+                    return
+                }
 
                 let detail = self.describeCallKitError(error)
                 self.fallbackToAppManagedCall(
@@ -147,7 +194,7 @@ final class CallKitCoordinator: NSObject, ObservableObject {
                 } else {
                     self.ble.clearOptimisticOutgoingUI()
                     self.status =
-                        "CallKit unavailable and J6 dial failed. "
+                        "CallKit unavailable and cellular dial failed. "
                         + detail
                 }
             }
@@ -187,12 +234,28 @@ final class CallKitCoordinator: NSObject, ObservableObject {
             return
         }
 
+        // Record cancellation before asking CallKit to end the call. The start
+        // transaction may still be queued, and its failure callback or provider
+        // action must never reinterpret this End as permission to dial again.
+        if pendingOutgoingStartUUIDs.contains(uuid) {
+            cancelledOutgoingStartUUIDs.insert(uuid)
+            finishCancelledOutgoingSetup(uuid: uuid)
+        }
+
         request(
             CXTransaction(
                 action: CXEndCallAction(call: uuid)
             ),
             failure: { [weak self] error in
                 guard let self else { return }
+
+                if self.cancelledOutgoingStartUUIDs.contains(uuid) {
+                    // The pending Start remains tombstoned until CallKit either
+                    // rejects it or delivers its provider action.
+                    self.finishCancelledOutgoingSetup(uuid: uuid)
+                    return
+                }
+
                 let detail = self.describeCallKitError(error)
                 self.fallbackToAppManagedCall(
                     reason: "CallKit end failed: " + detail
@@ -277,6 +340,65 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         return true
     }
 
+    func declineWaitingCall(id: Int) {
+        if let uuid = remoteCallUUIDs[id] {
+            request(CXTransaction(action: CXEndCallAction(call: uuid)))
+        } else {
+            _ = ble.rejectCall(id: id)
+        }
+    }
+
+    func acceptWaitingCall(id: Int, endingCurrent: Bool) {
+        guard let waitingUUID = remoteCallUUIDs[id] else {
+            if endingCurrent, let activeID = activeRemoteCallID() {
+                _ = ble.hangupCall(id: activeID)
+            } else if let activeID = activeRemoteCallID() {
+                _ = ble.setHeld(callID: activeID, held: true)
+            }
+            _ = ble.answerCall(id: id)
+            return
+        }
+
+        var actions: [CXAction] = []
+        if let currentCallUUID,
+           currentCallUUID != waitingUUID {
+            if endingCurrent {
+                actions.append(CXEndCallAction(call: currentCallUUID))
+            } else {
+                actions.append(
+                    CXSetHeldCallAction(
+                        call: currentCallUUID,
+                        onHold: true
+                    )
+                )
+            }
+        }
+        actions.append(CXAnswerCallAction(call: waitingUUID))
+        request(CXTransaction(actions: actions))
+    }
+
+    func swapCalls() {
+        guard let active = ble.remoteCalls.values.first(where: {
+            $0.state == "ACTIVE"
+        }),
+        let held = ble.remoteCalls.values.first(where: {
+            $0.state == "HOLDING"
+        }),
+        let activeUUID = remoteCallUUIDs[active.id],
+        let heldUUID = remoteCallUUIDs[held.id]
+        else {
+            _ = ble.swapCalls()
+            return
+        }
+
+        request(
+            CXTransaction(actions: [
+                CXSetHeldCallAction(call: activeUUID, onHold: true),
+                CXSetHeldCallAction(call: heldUUID, onHold: false)
+            ])
+        )
+    }
+
     func dismissFailedOutgoingCall() {
         failedOutgoingNumber = nil
     }
@@ -315,14 +437,46 @@ final class CallKitCoordinator: NSObject, ObservableObject {
                 )
             }
             .store(in: &cancellables)
+
+
+        ble.$remoteCalls
+            .sink { [weak self] calls in
+                self?.syncRemoteCalls(calls)
+            }
+            .store(in: &cancellables)
+
+        ble.$j6LanIP
+            .removeDuplicates()
+            .filter { !$0.isEmpty }
+            .sink { [weak self] ip in
+                self?.relay.adoptJ6LanIP(ip)
+            }
+            .store(in: &cancellables)
+
+        relay.$localIP
+            .removeDuplicates()
+            .sink { [weak self] ip in
+                guard let self,
+                      self.ble.isConnected,
+                      ip != "Not detected"
+                else { return }
+                self.ble.configureAudioPeer(ip: ip)
+                _ = self.ble.syncState()
+            }
+            .store(in: &cancellables)
     }
 
     private func handleCellularState(_ state: String) {
         let oldState = previousCellularState
+        let commandError = state == "ERROR"
 
-        // Audio lifecycle is app-level now, not dependent on ContentView
-        // being visible.
-        relay.handleCellularState(state)
+        // ERROR is a command/control transport result, never an authoritative
+        // GSM lifecycle state. BLECallController filters it before publishing
+        // callState, but keep this second guard here so a future producer can
+        // never tear down CallKit/audio by accidentally forwarding ERROR.
+        if !commandError {
+            relay.handleCellularState(state)
+        }
 
         if state == "ACTIVE" && relay.micStreamingReady {
             ble.audioReady()
@@ -335,6 +489,9 @@ final class CallKitCoordinator: NSObject, ObservableObject {
             )
 
         case "CONNECTING", "DIALING":
+            if currentDirection == .outgoing {
+                outgoingCarrierStateSeen = true
+            }
             if currentDirection == .outgoing,
                let uuid = currentCallUUID,
                !outgoingConnectingReported {
@@ -346,8 +503,15 @@ final class CallKitCoordinator: NSObject, ObservableObject {
             }
 
         case "ACTIVE":
+            currentCallEverActive = true
+            if currentDirection == .outgoing {
+                outgoingCarrierStateSeen = true
+            }
             if connectedAt == nil {
                 connectedAt = Date()
+            }
+            if let uuid = currentCallUUID {
+                markHistoryConnected(uuid: uuid)
             }
 
             if currentDirection == .outgoing,
@@ -360,7 +524,30 @@ final class CallKitCoordinator: NSObject, ObservableObject {
                 )
             }
 
-        case "DISCONNECTED", "IDLE":
+        case "IDLE":
+            // After CXStartCallAction is fulfilled there can be a short window
+            // where the BLE aggregate state still says IDLE while Android
+            // Telecom/carrier setup has not published the new call object yet.
+            // Do not kill the CallKit call merely because carrier setup is
+            // slow. Once CONNECTING/DIALING/ACTIVE has been observed, IDLE is
+            // authoritative again. DISCONNECTED is always authoritative.
+            if currentDirection == .outgoing,
+               !outgoingCarrierStateSeen,
+               !currentCallEverActive {
+                DiagnosticLog.active?.log(
+                    "CALLKIT",
+                    "ignored pre-carrier IDLE while outgoing setup is pending"
+                )
+                status = "Waiting for carrier call setup"
+            } else {
+                cancelPendingIncomingReport()
+                finishSystemCall(
+                    previousState: oldState,
+                    currentState: state
+                )
+            }
+
+        case "DISCONNECTED":
             cancelPendingIncomingReport()
             finishSystemCall(
                 previousState: oldState,
@@ -368,21 +555,22 @@ final class CallKitCoordinator: NSObject, ObservableObject {
             )
 
         case "ERROR":
-            cancelPendingIncomingReport()
-            if let uuid = currentCallUUID {
-                provider.reportCall(
-                    with: uuid,
-                    endedAt: Date(),
-                    reason: .failed
-                )
-                clearCurrentCall()
-            }
+            // Defensive fallback only. ERROR is not a carrier call state and
+            // must never end the system call. Wait for an authoritative
+            // IDLE/DISCONNECTED transition instead.
+            DiagnosticLog.active?.log(
+                "CALLKIT",
+                "ignored non-authoritative ERROR; waiting for carrier call state"
+            )
+            status = "Call control error ignored"
 
         default:
             break
         }
 
-        previousCellularState = state
+        if !commandError {
+            previousCellularState = state
+        }
     }
 
     private func reportIncomingIfNeeded(number: String) {
@@ -391,6 +579,7 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         if let uuid = currentCallUUID {
             guard !number.isEmpty else { return }
 
+            updateHistoryNumber(uuid: uuid, number: number)
             resolveContactMetadata(
                 number: number,
                 callUUID: uuid
@@ -407,6 +596,8 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         callKitAvailable = true
         failedOutgoingNumber = nil
         connectedAt = nil
+        currentCallEverActive = false
+        outgoingCarrierStateSeen = false
 
         let rawNumber = number.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -421,10 +612,10 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         incomingReportTask = Task { [weak self] in
             guard let self else { return }
 
-            // Resolve Contacts BEFORE the first CallKit report. This means the
-            // locked-screen incoming UI receives localizedCallerName in its
-            // initial CXCallUpdate instead of first displaying "Unknown" and
-            // relying on a later reportCall(updated:) refresh.
+            // Resolve Contacts BEFORE the first CallKit report. For a match,
+            // makeCallUpdate uses the phone number from that CNContact and lets
+            // iOS own Contacts identity resolution from the very first system
+            // presentation (Lock Screen / Dynamic Island / call UI).
             let metadata =
                 await self.contacts.resolve(
                     number: lookupNumber
@@ -454,8 +645,13 @@ final class CallKitCoordinator: NSObject, ObservableObject {
             self.persistCallUUID(uuid)
             self.currentDirection = .incoming
             self.currentNumber = lookupNumber
-            self.localEndRequested = false
+            self.beginHistory(
+                uuid: uuid,
+                direction: .incoming,
+                number: lookupNumber
+            )
             self.incomingReportTask = nil
+            self.bindCurrentCallToRemoteIfPossible()
 
             do {
                 try await self.provider.reportNewIncomingCall(
@@ -472,6 +668,7 @@ final class CallKitCoordinator: NSObject, ObservableObject {
             } catch {
                 let detail =
                     self.describeCallKitError(error)
+                self.abandonHistory(uuid: uuid)
 
                 // CallKit UI failure must never reject the real GSM call.
                 // Keep BLE RINGING alive for the in-app fallback path.
@@ -498,14 +695,25 @@ final class CallKitCoordinator: NSObject, ObservableObject {
             return
         }
 
-        if !localEndRequested {
+        let endedAt = Date()
+        let endedLocally = locallyEndingUUIDs.remove(uuid) != nil
+        let answerWasRequested = answeredIncomingUUIDs.remove(uuid) != nil
+        let wasUnansweredIncoming =
+            currentDirection == .incoming &&
+            previousState == "RINGING" &&
+            !endedLocally &&
+            !answerWasRequested
+        let wasFailedOutgoing =
+            currentDirection == .outgoing &&
+            !currentCallEverActive &&
+            !outgoingConnectedReported
+
+        if !endedLocally {
             let reason: CXCallEndedReason
 
-            if currentDirection == .incoming &&
-               previousState == "RINGING" {
+            if wasUnansweredIncoming {
                 reason = .unanswered
-            } else if currentDirection == .outgoing &&
-                        !outgoingConnectedReported {
+            } else if wasFailedOutgoing {
                 reason = .failed
                 failedOutgoingNumber =
                     currentNumber.isEmpty
@@ -517,12 +725,296 @@ final class CallKitCoordinator: NSObject, ObservableObject {
 
             provider.reportCall(
                 with: uuid,
-                endedAt: Date(),
+                endedAt: endedAt,
                 reason: reason
             )
         }
 
+        let number = currentNumber.isEmpty
+            ? displayPhoneNumber
+            : currentNumber
+
+        if wasUnansweredIncoming {
+            scheduleMissedCallNotification(
+                number: number,
+                callUUID: uuid
+            )
+        }
+
+        finalizeHistory(
+            uuid: uuid,
+            outcome: wasUnansweredIncoming
+                ? .missed
+                : (wasFailedOutgoing ? .failed : .completed),
+            endedAt: endedAt,
+            fallbackNumber: number
+        )
+
         clearCurrentCall()
+    }
+
+    private func activeRemoteCallID() -> Int? {
+        ble.remoteCalls.values.first(where: { $0.state == "ACTIVE" })?.id
+    }
+
+    private func bindCurrentCallToRemoteIfPossible() {
+        guard let uuid = currentCallUUID,
+              remoteCallIDs[uuid] == nil
+        else { return }
+
+        let candidates = ble.remoteCalls.values.filter {
+            $0.isLive && remoteCallUUIDs[$0.id] == nil
+        }
+        guard !candidates.isEmpty else { return }
+
+        let normalizedCurrent = currentNumber.filter { $0.isNumber || $0 == "+" }
+        let match = candidates.first(where: {
+            let n = $0.number.filter { $0.isNumber || $0 == "+" }
+            return !normalizedCurrent.isEmpty && n == normalizedCurrent
+        }) ?? (candidates.count == 1 ? candidates[0] : nil)
+
+        guard let match else { return }
+        remoteCallUUIDs[match.id] = uuid
+        remoteCallIDs[uuid] = match.id
+        DiagnosticLog.active?.log(
+            "CALLKIT",
+            "bound primary uuid=\(uuid) remoteID=\(match.id) state=\(match.state)"
+        )
+    }
+
+    private func syncRemoteCalls(
+        _ calls: [Int: BLECallController.RemoteCall]
+    ) {
+        bindCurrentCallToRemoteIfPossible()
+
+        for call in calls.values {
+            let previousRemoteState = previousRemoteCallStates[call.id]
+
+            if call.state == "RINGING",
+               remoteCallUUIDs[call.id] == nil {
+                // The first ringing call is handled by the legacy STATE path,
+                // which performs the contact lookup before its initial report.
+                // Any additional ringing call is call waiting.
+                if currentCallUUID != nil {
+                    reportWaitingIncoming(call)
+                }
+            }
+
+            if call.state == "DISCONNECTED" {
+                finishRemoteCall(
+                    id: call.id,
+                    lastState: previousRemoteState ?? call.state
+                )
+            }
+
+            previousRemoteCallStates[call.id] = call.state
+        }
+
+        let visibleIDs = Set(calls.keys)
+        previousRemoteCallStates = previousRemoteCallStates.filter {
+            visibleIDs.contains($0.key)
+        }
+
+        // Once Telecom switches the waiting call to ACTIVE, make it the
+        // foreground identity for our custom UI while the other call remains
+        // mapped/held in CallKit.
+        if let active = calls.values.first(where: { $0.state == "ACTIVE" }),
+           let uuid = remoteCallUUIDs[active.id] {
+            markHistoryConnected(uuid: uuid)
+
+            if currentCallUUID != uuid {
+                currentCallUUID = uuid
+                persistCallUUID(uuid)
+                currentDirection = .incoming
+                currentNumber = active.number
+                currentCallEverActive = true
+                connectedAt = Date()
+                let basic = contacts.basicMetadata(for: active.number)
+                applyCallMetadata(basic)
+            }
+        }
+    }
+
+    private func reportWaitingIncoming(
+        _ call: BLECallController.RemoteCall
+    ) {
+        guard !pendingRemoteIncomingReports.contains(call.id),
+              remoteCallUUIDs[call.id] == nil
+        else { return }
+
+        pendingRemoteIncomingReports.insert(call.id)
+        let remoteID = call.id
+        let number = call.number.isEmpty ? "Unknown" : call.number
+
+        Task { [weak self] in
+            guard let self else { return }
+            let metadata = await self.contacts.resolve(number: number)
+
+            guard self.ble.remoteCalls[remoteID]?.state == "RINGING",
+                  self.remoteCallUUIDs[remoteID] == nil
+            else {
+                self.pendingRemoteIncomingReports.remove(remoteID)
+                return
+            }
+
+            let uuid = UUID()
+            self.remoteCallUUIDs[remoteID] = uuid
+            self.remoteCallIDs[uuid] = remoteID
+            self.beginHistory(
+                uuid: uuid,
+                direction: .incoming,
+                number: number
+            )
+            self.pendingRemoteIncomingReports.remove(remoteID)
+
+            do {
+                try await self.provider.reportNewIncomingCall(
+                    with: uuid,
+                    update: self.makeCallUpdate(metadata: metadata)
+                )
+                self.status = "Call waiting: \(metadata.displayName ?? metadata.formattedNumber)"
+                DiagnosticLog.active?.log(
+                    "CALLKIT",
+                    "reported waiting remoteID=\(remoteID) uuid=\(uuid)"
+                )
+            } catch {
+                self.abandonHistory(uuid: uuid)
+                self.remoteCallUUIDs.removeValue(forKey: remoteID)
+                self.remoteCallIDs.removeValue(forKey: uuid)
+                self.status = "Call waiting UI failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func finishRemoteCall(id: Int, lastState: String) {
+        guard let uuid = remoteCallUUIDs[id] else { return }
+
+        let otherLiveCallExists = ble.remoteCalls.values.contains {
+            $0.id != id && $0.isLive
+        }
+        if uuid == currentCallUUID && !otherLiveCallExists {
+            // The legacy aggregate STATE will immediately become IDLE and
+            // finish the final call with the more accurate unanswered/failed
+            // reason. Avoid a duplicate provider end report here.
+            return
+        }
+
+        let endedAt = Date()
+        let number = ble.remoteCalls[id]?.number ?? ""
+        let endedLocally = locallyEndingUUIDs.remove(uuid) != nil
+        let answerWasRequested = answeredIncomingUUIDs.remove(uuid) != nil
+        let wasUnansweredIncoming =
+            lastState == "RINGING" &&
+            !endedLocally &&
+            !answerWasRequested
+
+        if !endedLocally {
+            provider.reportCall(
+                with: uuid,
+                endedAt: endedAt,
+                reason: wasUnansweredIncoming ? .unanswered : .remoteEnded
+            )
+        }
+
+        if wasUnansweredIncoming {
+            scheduleMissedCallNotification(
+                number: number,
+                callUUID: uuid
+            )
+        }
+
+        finalizeHistory(
+            uuid: uuid,
+            outcome: wasUnansweredIncoming ? .missed : .completed,
+            endedAt: endedAt,
+            fallbackNumber: number
+        )
+
+        remoteCallUUIDs.removeValue(forKey: id)
+        remoteCallIDs.removeValue(forKey: uuid)
+        pendingRemoteIncomingReports.remove(id)
+
+        if currentCallUUID == uuid {
+            if let next = ble.remoteCalls.values.first(where: {
+                $0.isLive && $0.id != id
+            }), let nextUUID = remoteCallUUIDs[next.id] {
+                currentCallUUID = nextUUID
+                persistCallUUID(nextUUID)
+                currentNumber = next.number
+                applyCallMetadata(contacts.basicMetadata(for: next.number))
+                connectedAt = next.state == "ACTIVE" ? Date() : nil
+                if next.state == "ACTIVE" {
+                    markHistoryConnected(uuid: nextUUID)
+                }
+            }
+        }
+    }
+
+    private func scheduleMissedCallNotification(
+        number: String,
+        callUUID: UUID
+    ) {
+        let lookupNumber = number.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            let metadata: ContactCallMetadata
+            if lookupNumber.isEmpty || lookupNumber == "Unknown" {
+                metadata = self.contacts.basicMetadata(for: "Unknown")
+            } else {
+                metadata = await self.contacts.resolve(number: lookupNumber)
+            }
+
+            let content = UNMutableNotificationContent()
+            content.title = "Missed Call"
+
+            let name = metadata.displayName?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ) ?? ""
+            let formattedNumber = metadata.formattedNumber.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+
+            if !name.isEmpty &&
+               !formattedNumber.isEmpty &&
+               formattedNumber != name {
+                content.body = "\(name)  •  \(formattedNumber)"
+            } else if !name.isEmpty {
+                content.body = name
+            } else if !formattedNumber.isEmpty &&
+                      formattedNumber != "Unknown" {
+                content.body = formattedNumber
+            } else {
+                content.body = "Unknown caller"
+            }
+
+            content.sound = .default
+            content.categoryIdentifier =
+                J6NotificationDelegate.missedCallCategoryID
+            content.threadIdentifier = "j6.missed-calls"
+            content.userInfo = [
+                "missedCall": true,
+                "caller": lookupNumber
+            ]
+
+            let request = UNNotificationRequest(
+                identifier: "j6.missed-call.\(callUUID.uuidString)",
+                content: content,
+                trigger: nil
+            )
+
+            do {
+                try await UNUserNotificationCenter.current().add(request)
+            } catch {
+                DiagnosticLog.active?.log(
+                    "CALLKIT",
+                    "missed_call_notification add_failed"
+                )
+            }
+        }
     }
 
     private func makeCallUpdate(
@@ -530,26 +1022,36 @@ final class CallKitCoordinator: NSObject, ObservableObject {
     ) -> CXCallUpdate {
         let update = CXCallUpdate()
 
-        let handleValue =
-            metadata.normalizedNumber.isEmpty
-                ? metadata.rawNumber
-                : metadata.normalizedNumber
+        let handleValue: String
+        if metadata.matchedContact,
+           !metadata.formattedNumber.isEmpty {
+            // For a Contacts match, hand CallKit the phone number exactly as
+            // represented by that CNContact. iOS can then perform its own
+            // caller identity lookup, including the contact photo/poster on
+            // system surfaces that support it.
+            handleValue = metadata.formattedNumber
+        } else if !metadata.normalizedNumber.isEmpty {
+            handleValue = metadata.normalizedNumber
+        } else {
+            handleValue = metadata.rawNumber
+        }
 
         update.remoteHandle = CXHandle(
             type: .phoneNumber,
             value: handleValue
         )
 
-        if let name = metadata.displayName,
+        if !metadata.matchedContact,
+           let name = metadata.displayName,
            !name.isEmpty {
-            // Apple can derive names from Contacts automatically from the
-            // remoteHandle; when our explicit lookup succeeds, provide the
-            // same resolved name so CallKit and our app stay identical.
+            // A matched CNContact deliberately leaves localizedCallerName nil
+            // so CallKit owns Contacts resolution instead of us overriding it.
+            // Keep an explicit fallback only for non-Contacts metadata.
             update.localizedCallerName = name
         }
 
         update.hasVideo = false
-        update.supportsHolding = false
+        update.supportsHolding = true
         update.supportsGrouping = false
         update.supportsUngrouping = false
         update.supportsDTMF = true
@@ -637,10 +1139,86 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         currentDirection = call.isOutgoing
             ? .outgoing
             : .incoming
+        currentCallEverActive = call.hasConnected
 
         status = call.hasConnected
             ? "Restored active iOS CallKit call"
             : "Restored pending iOS CallKit call"
+    }
+
+    private func beginHistory(
+        uuid: UUID,
+        direction: CallHistoryStore.Direction,
+        number: String,
+        startedAt: Date = Date()
+    ) {
+        if var existing = historyContexts[uuid] {
+            let trimmed = number.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && trimmed != "Unknown" {
+                existing.number = trimmed
+                historyContexts[uuid] = existing
+            }
+            return
+        }
+
+        historyContexts[uuid] = HistoryContext(
+            number: number.trimmingCharacters(in: .whitespacesAndNewlines),
+            direction: direction,
+            startedAt: startedAt,
+            connectedAt: nil
+        )
+    }
+
+    private func updateHistoryNumber(uuid: UUID, number: String) {
+        guard var context = historyContexts[uuid] else { return }
+        let trimmed = number.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty && trimmed != "Unknown" else { return }
+        context.number = trimmed
+        historyContexts[uuid] = context
+    }
+
+    private func markHistoryConnected(uuid: UUID) {
+        guard var context = historyContexts[uuid],
+              context.connectedAt == nil
+        else { return }
+        context.connectedAt = Date()
+        historyContexts[uuid] = context
+    }
+
+    private func finalizeHistory(
+        uuid: UUID,
+        outcome: CallHistoryStore.Outcome,
+        endedAt: Date,
+        fallbackNumber: String
+    ) {
+        guard let context = historyContexts.removeValue(forKey: uuid) else {
+            return
+        }
+
+        let storedNumber = context.number.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let fallback = fallbackNumber.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let finalNumber =
+            storedNumber.isEmpty || storedNumber == "Unknown"
+                ? (fallback.isEmpty ? "Unknown" : fallback)
+                : storedNumber
+
+        callHistory.record(
+            id: uuid,
+            startedAt: context.startedAt,
+            endedAt: endedAt,
+            number: finalNumber,
+            direction: context.direction,
+            outcome: outcome,
+            connectedAt: context.connectedAt
+        )
+    }
+
+    private func abandonHistory(uuid: UUID) {
+        historyContexts.removeValue(forKey: uuid)
     }
 
     private static func makeProviderIconData() -> Data? {
@@ -686,12 +1264,32 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         currentNumber = ""
         outgoingConnectingReported = false
         outgoingConnectedReported = false
-        localEndRequested = false
+        remoteCallUUIDs.removeAll()
+        remoteCallIDs.removeAll()
+        pendingRemoteIncomingReports.removeAll()
+        locallyEndingUUIDs.removeAll()
+        pendingOutgoingStartUUIDs.removeAll()
+        cancelledOutgoingStartUUIDs.removeAll()
+        answeredIncomingUUIDs.removeAll()
+        previousRemoteCallStates.removeAll()
 
         relay.disableCallKitAudioManagement()
         relay.handleCellularState(ble.callState)
 
         status = reason
+    }
+
+    private func finishCancelledOutgoingSetup(uuid: UUID) {
+        ble.clearOptimisticOutgoingUI()
+        relay.handleCellularState("IDLE")
+        relay.disableCallKitAudioManagement()
+        failedOutgoingNumber = nil
+
+        if currentCallUUID == uuid {
+            clearCurrentCall()
+        }
+
+        status = "Call cancelled"
     }
 
     private func describeCallKitError(_ error: Error) -> String {
@@ -703,6 +1301,14 @@ final class CallKitCoordinator: NSObject, ObservableObject {
 
     private func clearCurrentCall() {
         cancelPendingIncomingReport()
+        if let uuid = currentCallUUID {
+            if let remoteID = remoteCallIDs.removeValue(forKey: uuid) {
+                remoteCallUUIDs.removeValue(forKey: remoteID)
+                pendingRemoteIncomingReports.remove(remoteID)
+            }
+            locallyEndingUUIDs.remove(uuid)
+            answeredIncomingUUIDs.remove(uuid)
+        }
         currentCallUUID = nil
         clearPersistedCallUUID()
         currentDirection = nil
@@ -716,7 +1322,8 @@ final class CallKitCoordinator: NSObject, ObservableObject {
         contactThumbnailImageData = nil
         outgoingConnectingReported = false
         outgoingConnectedReported = false
-        localEndRequested = false
+        currentCallEverActive = false
+        outgoingCarrierStateSeen = false
         connectedAt = nil
 
         if isMuted {
@@ -769,7 +1376,40 @@ extension CallKitCoordinator: @preconcurrency CXProviderDelegate {
         _ provider: CXProvider,
         perform action: CXStartCallAction
     ) {
+        pendingOutgoingStartUUIDs.remove(action.callUUID)
+        let wasCancelled =
+            cancelledOutgoingStartUUIDs.contains(action.callUUID)
+        let isStale =
+            currentCallUUID != action.callUUID
+
+        if wasCancelled || isStale {
+            cancelledOutgoingStartUUIDs.insert(action.callUUID)
+            DiagnosticLog.active?.log(
+                "CALLKIT",
+                "suppressed cancelled outgoing start uuid=\(action.callUUID)"
+            )
+            finishCancelledOutgoingSetup(uuid: action.callUUID)
+
+            // Fulfill the queued Start so CallKit can retire the transaction,
+            // then immediately report it ended. Never send CMD|DIAL here.
+            action.fulfill()
+            provider.reportCall(
+                with: action.callUUID,
+                endedAt: Date(),
+                reason: .remoteEnded
+            )
+            return
+        }
+
         relay.prepareCallKitAudioSession()
+
+        // Pre-arm the iPhone audio lifecycle before the BLE/Telecom DIALING
+        // round-trip. On a cold app launch, waiting for J6 to publish DIALING
+        // can otherwise leave CallKit audio unprepared for the first moments of
+        // the cellular call. CallKit still owns AVAudioSession activation; this
+        // only marks audio as desired so didActivate can start immediately.
+        relay.enableCallKitAudioManagement()
+        relay.handleCellularState("DIALING")
 
         let number = action.handle.value
         let started = ble.performDial(
@@ -778,12 +1418,16 @@ extension CallKitCoordinator: @preconcurrency CXProviderDelegate {
 
         if started {
             callKitAvailable = true
-            relay.enableCallKitAudioManagement()
 
             currentCallUUID = action.callUUID
             persistCallUUID(action.callUUID)
             currentDirection = .outgoing
             currentNumber = number
+            beginHistory(
+                uuid: action.callUUID,
+                direction: .outgoing,
+                number: number
+            )
 
             let basic =
                 contacts.basicMetadata(for: number)
@@ -812,18 +1456,28 @@ extension CallKitCoordinator: @preconcurrency CXProviderDelegate {
             status = "Outgoing cellular call started"
             action.fulfill()
         } else {
+            // Undo the optimistic audio pre-arm if the BLE command could not be
+            // sent. No physical GSM call exists in this path.
+            relay.handleCellularState("IDLE")
+            relay.disableCallKitAudioManagement()
             failedOutgoingNumber =
                 currentNumber.isEmpty
                     ? displayPhoneNumber
                     : currentNumber
             ble.clearOptimisticOutgoingUI()
             status =
-                "Could not send cellular dial command to J6"
+                "Could not start cellular call"
             action.fail()
             provider.reportCall(
                 with: action.callUUID,
                 endedAt: Date(),
                 reason: .failed
+            )
+            finalizeHistory(
+                uuid: action.callUUID,
+                outcome: .failed,
+                endedAt: Date(),
+                fallbackNumber: number
             )
             clearCurrentCall()
         }
@@ -835,11 +1489,19 @@ extension CallKitCoordinator: @preconcurrency CXProviderDelegate {
     ) {
         relay.prepareCallKitAudioSession()
 
-        if ble.answer() {
-            status = "Answer sent to J6"
+        let sent: Bool
+        if let remoteID = remoteCallIDs[action.callUUID] {
+            sent = ble.answerCall(id: remoteID)
+        } else {
+            sent = ble.answer()
+        }
+
+        if sent {
+            answeredIncomingUUIDs.insert(action.callUUID)
+            status = "Call answered"
             action.fulfill()
         } else {
-            status = "J6 BLE unavailable while answering"
+            status = "Bluetooth unavailable while answering"
             action.fail()
         }
     }
@@ -848,14 +1510,50 @@ extension CallKitCoordinator: @preconcurrency CXProviderDelegate {
         _ provider: CXProvider,
         perform action: CXEndCallAction
     ) {
-        localEndRequested = true
+        if pendingOutgoingStartUUIDs.contains(action.callUUID) ||
+           cancelledOutgoingStartUUIDs.contains(action.callUUID) {
+            cancelledOutgoingStartUUIDs.insert(action.callUUID)
+            pendingOutgoingStartUUIDs.remove(action.callUUID)
+            finishCancelledOutgoingSetup(uuid: action.callUUID)
+            action.fulfill()
+            cancelledOutgoingStartUUIDs.remove(action.callUUID)
+            return
+        }
 
-        // Stop local call audio immediately. The real J6 DISCONNECTED
-        // state follows and completes cleanup.
-        relay.handleCellularState("DISCONNECTING")
+        locallyEndingUUIDs.insert(action.callUUID)
+
+        let remoteID = remoteCallIDs[action.callUUID]
+        let remoteState = remoteID.flatMap { ble.remoteCalls[$0]?.state }
+        let anotherLiveCallExists: Bool
+        if let remoteID {
+            anotherLiveCallExists = ble.remoteCalls.values.contains { call in
+                call.isLive && call.id != remoteID
+            }
+        } else {
+            anotherLiveCallExists = false
+        }
+
+        // Rejecting a waiting call, ending a held call, or doing End & Accept
+        // must not tear down the audio engine while another cellular call is
+        // still present. Telecom will switch the media route underneath the
+        // warm native relay.
+        let endingForegroundAudio =
+            !anotherLiveCallExists &&
+            action.callUUID == currentCallUUID &&
+            (remoteState == nil || remoteState == "ACTIVE" ||
+                remoteState == "DIALING" || remoteState == "CONNECTING")
+        if endingForegroundAudio {
+            relay.handleCellularState("DISCONNECTING")
+        }
 
         let sent: Bool
-        if ble.callState == "RINGING" {
+        if let remoteID {
+            if remoteState == "RINGING" {
+                sent = ble.rejectCall(id: remoteID)
+            } else {
+                sent = ble.hangupCall(id: remoteID)
+            }
+        } else if ble.callState == "RINGING" {
             sent = ble.reject()
         } else {
             sent = ble.hangup()
@@ -865,8 +1563,8 @@ extension CallKitCoordinator: @preconcurrency CXProviderDelegate {
             status = "Ending cellular call"
             action.fulfill()
         } else {
-            localEndRequested = false
-            status = "J6 BLE unavailable while ending call"
+            locallyEndingUUIDs.remove(action.callUUID)
+            status = "Bluetooth unavailable while ending call"
             action.fail()
         }
     }
@@ -902,7 +1600,7 @@ extension CallKitCoordinator: @preconcurrency CXProviderDelegate {
             status = "DTMF sent: \(action.digits)"
             action.fulfill()
         } else {
-            status = "DTMF failed: J6 BLE unavailable"
+            status = "DTMF failed: Bluetooth unavailable"
             action.fail()
         }
     }
@@ -911,8 +1609,25 @@ extension CallKitCoordinator: @preconcurrency CXProviderDelegate {
         _ provider: CXProvider,
         perform action: CXSetHeldCallAction
     ) {
-        // The J6 BLE protocol currently has no hold/resume command.
-        action.fail()
+        guard let remoteID = remoteCallIDs[action.callUUID] else {
+            status = "Hold failed: call ID not synchronized"
+            action.fail()
+            return
+        }
+
+        let sent = ble.setHeld(
+            callID: remoteID,
+            held: action.isOnHold
+        )
+        if sent {
+            status = action.isOnHold
+                ? "Call placed on hold"
+                : "Call resumed"
+            action.fulfill()
+        } else {
+            status = "Hold/resume failed: Bluetooth unavailable"
+            action.fail()
+        }
     }
 
     func provider(
@@ -953,22 +1668,30 @@ extension CallKitCoordinator:
         _ callObserver: CXCallObserver,
         callChanged call: CXCall
     ) {
+        // Track the whole CallKit group so ending the secondary call does
+        // not make the custom UI think there are no system calls left.
+        systemCallPresent = callObserver.calls.contains { !$0.hasEnded }
+
         guard let currentCallUUID,
               call.uuid == currentCallUUID
         else {
+            if remoteCallIDs[call.uuid] != nil {
+                DiagnosticLog.active?.log(
+                    "CALLKIT",
+                    "secondary changed uuid=\(call.uuid) connected=\(call.hasConnected) held=\(call.isOnHold) ended=\(call.hasEnded)"
+                )
+            }
             return
         }
 
-        systemCallPresent = !call.hasEnded
         systemCallConnected = call.hasConnected
         systemCallOutgoing = call.isOutgoing
 
         if call.hasEnded {
             clearPersistedCallUUID()
-        }
-
-        if call.hasEnded {
             status = "iOS system call ended"
+        } else if call.isOnHold {
+            status = "iOS system call on hold"
         } else if call.hasConnected {
             status = "iOS system call active"
         } else if call.isOutgoing {

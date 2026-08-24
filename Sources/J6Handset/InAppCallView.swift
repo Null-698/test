@@ -1,14 +1,16 @@
-import AVKit
 import SwiftUI
 import UIKit
 
 struct InAppCallView: View {
     @EnvironmentObject private var ble: BLECallController
     @EnvironmentObject private var callKit: CallKitCoordinator
+    @EnvironmentObject private var relay: RelayController
+    @Environment(\.colorScheme) private var colorScheme
 
     let onMinimize: () -> Void
 
     @State private var showingKeypad = false
+    @State private var showingAudioRoutes = false
     @State private var enteredDigits = ""
 
     private let keypadKeys: [(String, String)] = [
@@ -34,26 +36,40 @@ struct InAppCallView: View {
                 if showingKeypad &&
                    ble.uiCallState == "ACTIVE" {
                     keypadScreen(proxy: proxy)
-                        .transition(.opacity)
                 } else {
                     mainScreen(proxy: proxy)
-                        .transition(.opacity)
+                }
+
+                if showingAudioRoutes {
+                    audioRouteOverlay(proxy: proxy)
+                        .transition(
+                            .opacity.combined(
+                                with: .move(edge: .bottom)
+                            )
+                        )
+                        .zIndex(10)
                 }
             }
             .ignoresSafeArea()
         }
-        .preferredColorScheme(.dark)
         .animation(
-            .easeInOut(duration: 0.18),
-            value: showingKeypad
+            .easeOut(duration: 0.18),
+            value: showingAudioRoutes
         )
-        .onChange(of: ble.uiCallState) {
-            _, state in
-
+        .onChange(of: ble.uiCallState) { _, state in
             if state != "ACTIVE" {
                 showingKeypad = false
+                showingAudioRoutes = false
                 enteredDigits = ""
             }
+        }
+        .onChange(of: relay.hasExternalAudioRoute) { _, hasExternalRoute in
+            if !hasExternalRoute {
+                showingAudioRoutes = false
+            }
+        }
+        .onAppear {
+            relay.refreshAudioRoutes()
         }
     }
 
@@ -71,15 +87,18 @@ struct InAppCallView: View {
                     )
                 )
 
-            Spacer(minLength: 28)
+            Spacer(minLength: 24)
 
             identityBlock
+                .frame(maxWidth: 420)
                 .padding(.horizontal, 24)
 
-            Spacer()
+            Spacer(minLength: 24)
 
             if ble.uiCallState == "RINGING" {
                 incomingActions
+                    .frame(maxWidth: 360)
+                    .padding(.horizontal, 20)
                     .padding(
                         .bottom,
                         max(
@@ -89,10 +108,8 @@ struct InAppCallView: View {
                     )
             } else {
                 activeActions
-                    .padding(
-                        .horizontal,
-                        22
-                    )
+                    .frame(maxWidth: 430)
+                    .padding(.horizontal, 20)
                     .padding(
                         .bottom,
                         max(
@@ -113,8 +130,13 @@ struct InAppCallView: View {
                     .font(.system(size: 16, weight: .semibold))
                     .frame(width: 42, height: 42)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(
+                CallButtonStyle(
+                    fill: AppTheme.controlFill,
+                    cornerRadius: 21
+                )
+            )
+            .foregroundStyle(.primary)
             .accessibilityLabel("Minimize call")
 
             Spacer()
@@ -138,65 +160,59 @@ struct InAppCallView: View {
             }
             .padding(.horizontal, 13)
             .frame(height: 40)
-            .glassEffect(
-                .regular,
-                in: .capsule
+            .background(
+                Capsule()
+                    .fill(AppTheme.controlFill)
             )
+            .overlay {
+                Capsule()
+                    .stroke(
+                        AppTheme.separator,
+                        lineWidth: 1
+                    )
+            }
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(.primary)
     }
 
     private var identityBlock: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 14) {
             ZStack {
                 Circle()
-                    .fill(
-                        Color.white.opacity(0.08)
-                    )
-                    .frame(
-                        width: 118,
-                        height: 118
-                    )
+                    .fill(AppTheme.controlFill)
 
                 Circle()
                     .stroke(
-                        Color.white.opacity(0.18),
+                        AppTheme.separator,
                         lineWidth: 1
                     )
-                    .frame(
-                        width: 118,
-                        height: 118
-                    )
 
-                Image(
-                    systemName:
-                        "person.fill"
-                )
-                .font(
-                    .system(
-                        size: 46,
-                        weight: .medium
+                Image(systemName: "person.fill")
+                    .font(
+                        .system(
+                            size: 40,
+                            weight: .medium
+                        )
                     )
-                )
-                .foregroundStyle(
-                    .white.opacity(0.90)
-                )
+                    .foregroundStyle(.primary)
             }
-            .glassEffect(
-                .regular,
-                in: .circle
+            .frame(width: 104, height: 104)
+            .shadow(
+                color: .black.opacity(0.20),
+                radius: 18,
+                y: 10
             )
 
             VStack(spacing: 6) {
                 Text(primaryIdentity)
                     .font(
                         .system(
-                            size: 34,
+                            size: 32,
                             weight: .bold,
                             design: .rounded
                         )
                     )
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .minimumScaleFactor(0.58)
@@ -204,9 +220,7 @@ struct InAppCallView: View {
                 if !secondaryIdentity.isEmpty {
                     Text(secondaryIdentity)
                         .font(.system(size: 16))
-                        .foregroundStyle(
-                            .white.opacity(0.66)
-                        )
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
 
@@ -229,9 +243,7 @@ struct InAppCallView: View {
                                 design: .rounded
                             )
                         )
-                        .foregroundStyle(
-                            .white.opacity(0.72)
-                        )
+                        .foregroundStyle(.secondary)
                         .monospacedDigit()
                     }
                 } else {
@@ -242,130 +254,124 @@ struct InAppCallView: View {
                                 weight: .medium
                             )
                         )
-                        .foregroundStyle(
-                            .white.opacity(0.72)
-                        )
+                        .foregroundStyle(.secondary)
                 }
             }
         }
     }
 
     private var activeActions: some View {
-        GlassEffectContainer(spacing: 14) {
-            VStack(spacing: 14) {
-                HStack(spacing: 14) {
-                    glassAction(
-                        title:
-                            callKit.isMuted
-                                ? "Unmute"
-                                : "Mute",
-                        symbol:
-                            callKit.isMuted
-                                ? "mic.slash.fill"
-                                : "mic.fill",
-                        selected:
-                            callKit.isMuted
-                    ) {
-                        callKit.setMuted(
-                            !callKit.isMuted
-                        )
-                    }
-
-                    audioRouteAction
-
-                    glassAction(
-                        title: "Keypad",
-                        symbol:
-                            "circle.grid.3x3.fill"
-                    ) {
-                        guard
-                            ble.uiCallState ==
-                                "ACTIVE"
-                        else {
-                            return
-                        }
-
-                        enteredDigits = ""
-                        showingKeypad = true
-                        impact()
-                    }
+        VStack(spacing: 16) {
+            HStack(spacing: 14) {
+                callControl(
+                    title: "Mute",
+                    symbol: callKit.isMuted
+                        ? "mic.slash.fill"
+                        : "mic.fill",
+                    isSelected: callKit.isMuted,
+                    accessibilityValue: callKit.isMuted
+                        ? "On"
+                        : "Off"
+                ) {
+                    callKit.setMuted(!callKit.isMuted)
                 }
 
-                Button {
-                    callKit.endCurrentCall()
-                } label: {
-                    Label(
-                        "End Call",
-                        systemImage:
-                            "phone.down.fill"
-                    )
-                    .font(
-                        .system(
-                            size: 17,
-                            weight: .semibold
-                        )
-                    )
-                    .frame(
-                        maxWidth: .infinity
-                    )
-                    .frame(height: 58)
+                audioRouteControl
+
+                callControl(
+                    title: "Keypad",
+                    symbol: "circle.grid.3x3.fill",
+                    isEnabled: ble.uiCallState == "ACTIVE"
+                ) {
+                    enteredDigits = ""
+                    showingKeypad = true
                 }
-                .buttonStyle(.glassProminent)
-                .tint(.red)
             }
+
+            Button {
+                callKit.endCurrentCall()
+            } label: {
+                Label(
+                    "End Call",
+                    systemImage: "phone.down.fill"
+                )
+                .font(
+                    .system(
+                        size: 17,
+                        weight: .semibold
+                    )
+                )
+                .frame(maxWidth: .infinity)
+                .frame(height: 58)
+            }
+            .buttonStyle(
+                CallButtonStyle(
+                    fill: .red,
+                    cornerRadius: 18,
+                    pressedScale: 0.98
+                )
+            )
+            .foregroundStyle(.white)
         }
         .padding(16)
-        .glassEffect(
-            .regular,
-            in: .rect(cornerRadius: 30)
+        .background(
+            RoundedRectangle(
+                cornerRadius: 30,
+                style: .continuous
+            )
+            .fill(
+                AppTheme.panelBackground.opacity(
+                    colorScheme == .dark ? 0.82 : 0.94
+                )
+            )
         )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 30,
+                style: .continuous
+            )
+            .stroke(
+                AppTheme.separator,
+                lineWidth: 1
+            )
+        }
     }
 
-    private func glassAction(
+    private func callControl(
         title: String,
         symbol: String,
-        selected: Bool = false,
+        isSelected: Bool = false,
+        isEnabled: Bool = true,
+        accessibilityValue: String? = nil,
         action: @escaping () -> Void
     ) -> some View {
         VStack(spacing: 8) {
-            Group {
-                if selected {
-                    Button(action: action) {
-                        Image(systemName: symbol)
-                            .font(
-                                .system(
-                                    size: 22,
-                                    weight: .semibold
-                                )
-                            )
-                            .frame(
-                                width: 64,
-                                height: 64
-                            )
-                    }
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.circle)
-                    .tint(.white)
-                    .foregroundStyle(.black)
-                } else {
-                    Button(action: action) {
-                        Image(systemName: symbol)
-                            .font(
-                                .system(
-                                    size: 22,
-                                    weight: .semibold
-                                )
-                            )
-                            .frame(
-                                width: 64,
-                                height: 64
-                            )
-                    }
-                    .buttonStyle(.glass(.clear))
-                    .buttonBorderShape(.circle)
-                    .foregroundStyle(.white)
-                }
+            Button(action: action) {
+                Image(systemName: symbol)
+                    .font(
+                        .system(
+                            size: 22,
+                            weight: .semibold
+                        )
+                    )
+                    .frame(width: 66, height: 66)
             }
+            .buttonStyle(
+                CallButtonStyle(
+                    fill: isSelected
+                        ? AppTheme.selectedControlFill
+                        : AppTheme.controlFill,
+                    cornerRadius: 33
+                )
+            )
+            .foregroundStyle(
+                isSelected
+                    ? AppTheme.selectedControlForeground
+                    : Color.primary
+            )
+            .disabled(!isEnabled)
+            .accessibilityLabel(title)
+            .accessibilityValue(accessibilityValue ?? "")
 
             Text(title)
                 .font(
@@ -374,61 +380,31 @@ struct InAppCallView: View {
                         weight: .medium
                     )
                 )
-                .foregroundStyle(
-                    .white.opacity(0.82)
-                )
+                .foregroundStyle(.secondary)
+                .opacity(isEnabled ? 1 : 0.45)
         }
         .frame(maxWidth: .infinity)
     }
 
-    private var audioRouteAction: some View {
-        VStack(spacing: 8) {
-            ZStack {
-                Button { } label: {
-                    Image(
-                        systemName:
-                            "speaker.wave.2.fill"
-                    )
-                    .font(
-                        .system(
-                            size: 22,
-                            weight: .semibold
-                        )
-                    )
-                    .frame(
-                        width: 64,
-                        height: 64
-                    )
-                }
-                .buttonStyle(.glass(.clear))
-                .buttonBorderShape(.circle)
-                .foregroundStyle(.white)
-                .allowsHitTesting(false)
-
-                NativeRoutePicker()
-                    .frame(
-                        width: 64,
-                        height: 64
-                    )
-                    .opacity(0.02)
+    private var audioRouteControl: some View {
+        callControl(
+            title: "Audio",
+            symbol: "speaker.wave.2.fill",
+            isSelected: relay.selectedAudioRoute == .speaker,
+            isEnabled: !relay.isAudioRouteSwitching,
+            accessibilityValue: relay.selectedAudioRoute.title
+        ) {
+            relay.refreshAudioRoutes()
+            if relay.hasExternalAudioRoute {
+                showingAudioRoutes = true
+            } else {
+                relay.toggleBuiltInAudioRoute()
             }
-
-            Text("Audio")
-                .font(
-                    .system(
-                        size: 12.5,
-                        weight: .medium
-                    )
-                )
-                .foregroundStyle(
-                    .white.opacity(0.82)
-                )
         }
-        .frame(maxWidth: .infinity)
     }
 
     private var incomingActions: some View {
-        HStack(spacing: 36) {
+        HStack(spacing: 28) {
             VStack(spacing: 10) {
                 Button {
                     callKit.endCurrentCall()
@@ -440,20 +416,19 @@ struct InAppCallView: View {
                                 weight: .semibold
                             )
                         )
-                        .frame(
-                            width: 78,
-                            height: 78
-                        )
+                        .frame(width: 78, height: 78)
                 }
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.circle)
-                .tint(
-                    Color.white.opacity(0.16)
+                .buttonStyle(
+                    CallButtonStyle(
+                        fill: AppTheme.controlFill,
+                        cornerRadius: 39
+                    )
                 )
 
                 Text("Decline")
                     .font(.subheadline)
             }
+            .frame(maxWidth: .infinity)
 
             VStack(spacing: 10) {
                 Button {
@@ -466,20 +441,23 @@ struct InAppCallView: View {
                                 weight: .semibold
                             )
                         )
-                        .frame(
-                            width: 78,
-                            height: 78
-                        )
+                        .frame(width: 78, height: 78)
                 }
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.circle)
-                .tint(.green)
+                .buttonStyle(
+                    CallButtonStyle(
+                        fill: .green,
+                        cornerRadius: 39
+                    )
+                )
+                .foregroundStyle(.white)
 
                 Text("Answer")
                     .font(.subheadline)
             }
+            .frame(maxWidth: .infinity)
         }
-        .foregroundStyle(.white)
+        .padding(.horizontal, 34)
+        .foregroundStyle(.primary)
     }
 
     private func keypadScreen(
@@ -491,23 +469,22 @@ struct InAppCallView: View {
                     showingKeypad = false
                     enteredDigits = ""
                 } label: {
-                    Image(
-                        systemName:
-                            "chevron.down"
-                    )
-                    .font(
-                        .system(
-                            size: 16,
-                            weight: .semibold
+                    Image(systemName: "chevron.down")
+                        .font(
+                            .system(
+                                size: 16,
+                                weight: .semibold
+                            )
                         )
-                    )
-                    .frame(
-                        width: 42,
-                        height: 42
-                    )
+                        .frame(width: 42, height: 42)
                 }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
+                .buttonStyle(
+                    CallButtonStyle(
+                        fill: AppTheme.controlFill,
+                        cornerRadius: 21
+                    )
+                )
+                .foregroundStyle(.primary)
 
                 Spacer()
             }
@@ -528,10 +505,9 @@ struct InAppCallView: View {
                 )
                 .font(
                     .system(
-                        size:
-                            enteredDigits.isEmpty
-                                ? 27
-                                : 34,
+                        size: enteredDigits.isEmpty
+                            ? 27
+                            : 34,
                         weight: .semibold,
                         design: .rounded
                     )
@@ -542,38 +518,25 @@ struct InAppCallView: View {
 
                 Text("DTMF keypad")
                     .font(.subheadline)
-                    .foregroundStyle(
-                        .white.opacity(0.62)
-                    )
+                    .foregroundStyle(.secondary)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(.primary)
             .padding(.top, 24)
 
             Spacer()
 
-            GlassEffectContainer(spacing: 12) {
-                VStack(spacing: 12) {
-                    ForEach(
-                        0..<4,
-                        id: \.self
-                    ) { row in
-                        HStack(spacing: 16) {
-                            ForEach(
-                                0..<3,
-                                id: \.self
-                            ) { column in
-                                let key =
-                                    keypadKeys[
-                                        row * 3
-                                        + column
-                                    ]
+            VStack(spacing: 12) {
+                ForEach(0..<4, id: \.self) { row in
+                    HStack(spacing: 16) {
+                        ForEach(0..<3, id: \.self) { column in
+                            let key = keypadKeys[
+                                row * 3 + column
+                            ]
 
-                                dtmfKey(
-                                    digit: key.0,
-                                    letters:
-                                        key.1
-                                )
-                            }
+                            dtmfKey(
+                                digit: key.0,
+                                letters: key.1
+                            )
                         }
                     }
                 }
@@ -586,8 +549,7 @@ struct InAppCallView: View {
             } label: {
                 Label(
                     "End Call",
-                    systemImage:
-                        "phone.down.fill"
+                    systemImage: "phone.down.fill"
                 )
                 .font(
                     .system(
@@ -598,8 +560,14 @@ struct InAppCallView: View {
                 .frame(width: 180)
                 .frame(height: 56)
             }
-            .buttonStyle(.glassProminent)
-            .tint(.red)
+            .buttonStyle(
+                CallButtonStyle(
+                    fill: .red,
+                    cornerRadius: 18,
+                    pressedScale: 0.98
+                )
+            )
+            .foregroundStyle(.white)
             .padding(
                 .bottom,
                 max(
@@ -608,6 +576,7 @@ struct InAppCallView: View {
                 )
             )
         }
+        .foregroundStyle(.primary)
     }
 
     private func dtmfKey(
@@ -617,48 +586,171 @@ struct InAppCallView: View {
         Button {
             sendDtmf(digit)
         } label: {
-            VStack(spacing: -1) {
-                Text(digit)
-                    .font(
-                        .system(
-                            size: 31,
-                            weight: .medium,
-                            design: .rounded
-                        )
-                    )
-                    .monospacedDigit()
-
-                Text(letters)
-                    .font(
-                        .system(
-                            size: 9.5,
-                            weight: .semibold
-                        )
-                    )
-                    .tracking(1.8)
-                    .frame(height: 11)
-                    .opacity(
-                        letters.isEmpty
-                            ? 0
-                            : 0.76
-                    )
-            }
-            .frame(
-                width: 76,
-                height: 76
+            InCallDialPadKeyFace(
+                digit: digit,
+                letters: letters,
+                diameter: 76
             )
         }
-        .buttonStyle(.glass(.clear))
-        .buttonBorderShape(.circle)
-        .foregroundStyle(.white)
+        .buttonStyle(
+            CallButtonStyle(
+                fill: AppTheme.controlFill,
+                cornerRadius: 38
+            )
+        )
+        .foregroundStyle(.primary)
+        .accessibilityLabel(
+            letters.isEmpty
+                ? digit
+                : "\(digit), \(letters)"
+        )
+    }
+
+    private func audioRouteOverlay(
+        proxy: GeometryProxy
+    ) -> some View {
+        ZStack(alignment: .bottom) {
+            Button {
+                showingAudioRoutes = false
+            } label: {
+                Color.black.opacity(0.48)
+                    .frame(
+                        maxWidth: .infinity,
+                        maxHeight: .infinity
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close audio routes")
+
+            VStack(spacing: 14) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.35))
+                    .frame(width: 36, height: 5)
+
+                HStack {
+                    Text("Audio Route")
+                        .font(.title3.weight(.semibold))
+
+                    Spacer()
+
+                    Button {
+                        showingAudioRoutes = false
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(
+                                .system(
+                                    size: 14,
+                                    weight: .bold
+                                )
+                            )
+                            .frame(width: 34, height: 34)
+                    }
+                    .buttonStyle(
+                        CallButtonStyle(
+                            fill: AppTheme.controlFill,
+                            cornerRadius: 17
+                        )
+                    )
+                    .accessibilityLabel("Close")
+                }
+
+                VStack(spacing: 8) {
+                    ForEach(relay.availableAudioRoutes) { route in
+                        Button {
+                            relay.selectAudioRoute(route)
+                            showingAudioRoutes = false
+                        } label: {
+                            HStack(spacing: 13) {
+                                Image(systemName: route.callScreenSymbol)
+                                    .font(
+                                        .system(
+                                            size: 18,
+                                            weight: .semibold
+                                        )
+                                    )
+                                    .frame(width: 28)
+
+                                Text(route.title)
+                                    .font(.body.weight(.medium))
+
+                                Spacer()
+
+                                if relay.selectedAudioRoute == route {
+                                    Image(systemName: "checkmark")
+                                        .font(
+                                            .system(
+                                                size: 15,
+                                                weight: .bold
+                                            )
+                                        )
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 50)
+                            .padding(.horizontal, 14)
+                        }
+                        .buttonStyle(
+                            CallButtonStyle(
+                                fill: relay.selectedAudioRoute == route
+                                    ? Color(uiColor: .systemFill)
+                                    : AppTheme.controlFill,
+                                cornerRadius: 15,
+                                pressedScale: 0.985
+                            )
+                        )
+                        .foregroundStyle(
+                            relay.selectedAudioRoute == route
+                                ? AppTheme.tint
+                                : Color.primary
+                        )
+                        .disabled(relay.isAudioRouteSwitching)
+                    }
+                }
+            }
+            .foregroundStyle(.primary)
+            .padding(18)
+            .background(
+                RoundedRectangle(
+                    cornerRadius: 28,
+                    style: .continuous
+                )
+                .fill(
+                    Color(uiColor: .systemBackground)
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: 28,
+                    style: .continuous
+                )
+                .stroke(
+                    AppTheme.separator,
+                    lineWidth: 1
+                )
+            }
+            .shadow(
+                color: .black.opacity(
+                    colorScheme == .dark ? 0.42 : 0.16
+                ),
+                radius: 26,
+                y: 12
+            )
+            .padding(.horizontal, 18)
+            .padding(
+                .bottom,
+                max(
+                    proxy.safeAreaInsets.bottom + 18,
+                    28
+                )
+            )
+        }
     }
 
     private func sendDtmf(
         _ digit: String
     ) {
-        guard
-            ble.uiCallState == "ACTIVE"
-        else {
+        guard ble.uiCallState == "ACTIVE" else {
             return
         }
 
@@ -699,9 +791,7 @@ struct InAppCallView: View {
     }
 
     private var secondaryIdentity: String {
-        guard
-            !callKit.displayCallerName.isEmpty
-        else {
+        guard !callKit.displayCallerName.isEmpty else {
             return ""
         }
 
@@ -737,6 +827,8 @@ struct InAppCallView: View {
         case "CONNECTING",
              "DIALING":
             return "Calling"
+        case "HOLDING":
+            return "On Hold"
         default:
             return "Call"
         }
@@ -745,27 +837,22 @@ struct InAppCallView: View {
     private func durationText(
         now: Date
     ) -> String {
-        guard
-            let start =
-                callKit.connectedAt
-        else {
+        guard let start = callKit.connectedAt else {
             return "00:00"
         }
 
-        let total =
-            max(
-                0,
-                Int(
-                    now.timeIntervalSince(
-                        start
-                    )
+        let total = max(
+            0,
+            Int(
+                now.timeIntervalSince(
+                    start
                 )
             )
+        )
 
         if total >= 3600 {
             return String(
-                format:
-                    "%d:%02d:%02d",
+                format: "%d:%02d:%02d",
                 total / 3600,
                 (total / 60) % 60,
                 total % 60
@@ -773,8 +860,7 @@ struct InAppCallView: View {
         }
 
         return String(
-            format:
-                "%02d:%02d",
+            format: "%02d:%02d",
             total / 60,
             total % 60
         )
@@ -788,34 +874,141 @@ struct InAppCallView: View {
     }
 }
 
-private struct CallBackdrop: View {
+private struct CallButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    let fill: Color
+    let cornerRadius: CGFloat
+    var pressedScale: CGFloat = 0.94
+
+    func makeBody(
+        configuration: Configuration
+    ) -> some View {
+        configuration.label
+            .background(
+                RoundedRectangle(
+                    cornerRadius: cornerRadius,
+                    style: .continuous
+                )
+                .fill(
+                    configuration.isPressed
+                        ? fill.opacity(0.72)
+                        : fill
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: cornerRadius,
+                    style: .continuous
+                )
+                .stroke(
+                    AppTheme.separator.opacity(
+                        configuration.isPressed ? 1 : 0.75
+                    ),
+                    lineWidth: 1
+                )
+            }
+            .scaleEffect(
+                configuration.isPressed
+                    ? pressedScale
+                    : 1
+            )
+            .opacity(isEnabled ? 1 : 0.38)
+            .animation(
+                .easeOut(duration: 0.10),
+                value: configuration.isPressed
+            )
+    }
+}
+
+private struct InCallDialPadKeyFace: View {
+    let digit: String
+    let letters: String
+    let diameter: CGFloat
+
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(
-                        red: 0.045,
-                        green: 0.075,
-                        blue: 0.13
-                    ),
-                    Color(
-                        red: 0.035,
-                        green: 0.19,
-                        blue: 0.22
-                    ),
-                    Color(
-                        red: 0.025,
-                        green: 0.10,
-                        blue: 0.18
+            if letters.isEmpty {
+                primaryGlyph
+                    .position(
+                        x: diameter / 2,
+                        y: diameter / 2
                     )
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            } else {
+                primaryGlyph
+                    .position(
+                        x: diameter / 2,
+                        y: diameter / 2 - 7.5
+                    )
+
+                Text(letters)
+                    .font(
+                        .system(
+                            size: 9.5,
+                            weight: .semibold
+                        )
+                    )
+                    .tracking(1.65)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .position(
+                        x: diameter / 2,
+                        y: diameter / 2 + 17.5
+                    )
+            }
+        }
+        .frame(width: diameter, height: diameter)
+        .contentShape(Circle())
+    }
+
+    @ViewBuilder
+    private var primaryGlyph: some View {
+        if digit == "*" {
+            Image(systemName: "asterisk")
+                .font(.system(size: 28, weight: .medium))
+        } else if digit == "#" {
+            Image(systemName: "number")
+                .font(.system(size: 27, weight: .medium))
+        } else {
+            Text(digit)
+                .font(
+                    .system(
+                        size: 31,
+                        weight: .medium,
+                        design: .rounded
+                    )
+                )
+                .monospacedDigit()
+                .fixedSize()
+        }
+    }
+}
+
+private extension CallAudioRouteChoice {
+    var callScreenSymbol: String {
+        switch self {
+        case .receiver:
+            return "iphone"
+        case .speaker:
+            return "speaker.wave.2.fill"
+        case .bluetooth:
+            return "airpodspro"
+        }
+    }
+}
+
+private struct CallBackdrop: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ZStack {
+            Color(uiColor: .systemBackground)
 
             RadialGradient(
                 colors: [
-                    Color.green.opacity(0.22),
+                    Color.green.opacity(
+                        colorScheme == .dark ? 0.22 : 0.10
+                    ),
                     .clear
                 ],
                 center: .bottomLeading,
@@ -825,7 +1018,9 @@ private struct CallBackdrop: View {
 
             RadialGradient(
                 colors: [
-                    Color.blue.opacity(0.20),
+                    AppTheme.tint.opacity(
+                        colorScheme == .dark ? 0.20 : 0.09
+                    ),
                     .clear
                 ],
                 center: .topTrailing,
@@ -835,27 +1030,4 @@ private struct CallBackdrop: View {
         }
         .ignoresSafeArea()
     }
-}
-
-private struct NativeRoutePicker: UIViewRepresentable {
-    func makeUIView(
-        context: Context
-    ) -> AVRoutePickerView {
-        let view =
-            AVRoutePickerView()
-
-        view.prioritizesVideoDevices =
-            false
-        view.activeTintColor =
-            .white
-        view.tintColor =
-            .white
-
-        return view
-    }
-
-    func updateUIView(
-        _ uiView: AVRoutePickerView,
-        context: Context
-    ) { }
 }

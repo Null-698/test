@@ -14,15 +14,30 @@ struct ContactCallMetadata: Equatable, Sendable {
     }
 }
 
+
+struct ContactSMSRecipientSuggestion: Identifiable, Equatable, Sendable {
+    let id: String
+    let displayName: String
+    let phoneNumber: String
+    let formattedNumber: String
+    let thumbnailImageData: Data?
+}
+
 @MainActor
 final class ContactResolver: ObservableObject {
 
     @Published private(set) var authorizationText = "Checking…"
     @Published private(set) var canReadContacts = false
-    @Published private(set) var lastLookupStatus = "No lookup yet"
+    // This is diagnostic text, not render-driving state. Publishing every
+    // lookup result invalidated every visible contact/call row while scrolling.
+    private(set) var lastLookupStatus = "No lookup yet"
+    @Published private(set) var contactsRevision = 0
 
-    private var cache: [String: ContactCallMetadata] = [:]
     private var storeChangeObserver: NSObjectProtocol?
+    private var metadataCache: [String: ContactCallMetadata] = [:]
+    private var pendingLookups: [String: Task<ContactCallMetadata, Never>] = [:]
+    private var suggestionSearchTask: Task<[ContactSMSRecipientSuggestion], Never>?
+    private var suggestionSearchGeneration = 0
 
     init() {
         refreshAuthorizationStatus()
@@ -33,10 +48,12 @@ final class ContactResolver: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.cache.removeAll()
-                self?.lastLookupStatus =
-                    "Contacts changed; caller-ID cache refreshed"
-                self?.refreshAuthorizationStatus()
+                guard let self else { return }
+                self.invalidateContactCache()
+                self.contactsRevision &+= 1
+                self.lastLookupStatus =
+                    "Contacts changed; using fresh data"
+                self.refreshAuthorizationStatus()
             }
         }
     }
@@ -80,56 +97,64 @@ final class ContactResolver: ObservableObject {
             for: .contacts
         )
 
-        if #available(iOS 18.0, *),
-           status == .limited {
-            authorizationText = "Limited Contacts access"
-            canReadContacts = true
-            return
-        }
-
+        let newAuthorizationText: String
+        let newCanReadContacts: Bool
         switch status {
         case .authorized:
-            authorizationText = "Full Contacts access"
-            canReadContacts = true
+            newAuthorizationText = "Full Contacts access"
+            newCanReadContacts = true
 
         case .notDetermined:
-            authorizationText = "Contacts permission not requested"
-            canReadContacts = false
+            newAuthorizationText = "Contacts permission not requested"
+            newCanReadContacts = false
 
         case .denied:
-            authorizationText = "Contacts access denied"
-            canReadContacts = false
+            newAuthorizationText = "Contacts access denied"
+            newCanReadContacts = false
 
         case .restricted:
-            authorizationText = "Contacts access restricted"
-            canReadContacts = false
+            newAuthorizationText = "Contacts access restricted"
+            newCanReadContacts = false
 
         case .limited:
             if #available(iOS 18.0, *) {
-                authorizationText = "Limited Contacts access"
-                canReadContacts = true
+                newAuthorizationText = "Limited Contacts access"
+                newCanReadContacts = true
             } else {
-                authorizationText = "Contacts access unavailable"
-                canReadContacts = false
+                newAuthorizationText = "Contacts access unavailable"
+                newCanReadContacts = false
             }
 
         @unknown default:
-            authorizationText = "Contacts access unavailable"
-            canReadContacts = false
+            newAuthorizationText = "Contacts access unavailable"
+            newCanReadContacts = false
+        }
+
+        let accessChanged = canReadContacts != newCanReadContacts
+        if authorizationText != newAuthorizationText {
+            authorizationText = newAuthorizationText
+        }
+        if accessChanged {
+            canReadContacts = newCanReadContacts
+            invalidateContactCache()
+            contactsRevision &+= 1
         }
     }
 
     func basicMetadata(
         for number: String
     ) -> ContactCallMetadata {
+        let trimmed = number.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = Self.normalizedHandle(number)
+        let isNamedSender = Self.isNamedSenderHandle(trimmed)
+        let formatted = isNamedSender || normalized.isEmpty
+            ? (trimmed.isEmpty ? "Unknown" : trimmed)
+            : Self.formatDisplayNumber(normalized)
         return ContactCallMetadata(
             rawNumber: number,
             normalizedNumber: normalized,
-            formattedNumber: Self.formatDisplayNumber(
-                normalized
-            ),
-            displayName: nil,
+            formattedNumber: formatted,
+            displayName: isNamedSender ? trimmed : nil,
             contactIdentifier: nil,
             thumbnailImageData: nil
         )
@@ -138,31 +163,42 @@ final class ContactResolver: ObservableObject {
     func resolve(
         number: String
     ) async -> ContactCallMetadata {
-        let key = Self.canonicalDigits(number)
-
-        if let cached = cache[key] {
-            lastLookupStatus = cached.matchedContact
-                ? "Matched \(cached.displayName ?? "contact")"
-                : "No matching contact"
-            return cached
-        }
-
         let basic = basicMetadata(for: number)
+
+        if Self.isNamedSenderHandle(number) {
+            lastLookupStatus = "Carrier/service sender"
+            return basic
+        }
 
         guard canReadContacts else {
             lastLookupStatus =
                 "Contacts unavailable; using phone number"
-            cache[key] = basic
             return basic
         }
 
-        let resolved = await Task.detached(
+        let cacheKey = Self.lookupCacheKey(number)
+        if let cached = metadataCache[cacheKey] {
+            return cached
+        }
+
+        if let pending = pendingLookups[cacheKey] {
+            return await pending.value
+        }
+
+        let lookupRevision = contactsRevision
+        let lookup = Task.detached(
             priority: .userInitiated
         ) {
             Self.lookupContact(number: number) ?? basic
-        }.value
+        }
+        pendingLookups[cacheKey] = lookup
+        let resolved = await lookup.value
 
-        cache[key] = resolved
+        if contactsRevision == lookupRevision {
+            pendingLookups.removeValue(forKey: cacheKey)
+            metadataCache[cacheKey] = resolved
+        }
+
         lastLookupStatus = resolved.matchedContact
             ? "Matched \(resolved.displayName ?? "contact")"
             : "No matching contact"
@@ -174,6 +210,54 @@ final class ContactResolver: ObservableObject {
         for number: String
     ) -> String {
         Self.normalizedHandle(number)
+    }
+
+
+    func smsRecipientSuggestions(
+        matching rawQuery: String,
+        limit: Int = 8
+    ) async -> [ContactSMSRecipientSuggestion] {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count >= 2, canReadContacts else { return [] }
+
+        suggestionSearchGeneration &+= 1
+        let generation = suggestionSearchGeneration
+        suggestionSearchTask?.cancel()
+
+        let search = Task.detached(priority: .userInitiated) {
+            Self.searchSMSRecipients(query: query, limit: limit)
+        }
+        suggestionSearchTask = search
+        let results = await search.value
+
+        guard generation == suggestionSearchGeneration,
+              !Task.isCancelled else {
+            return []
+        }
+
+        suggestionSearchTask = nil
+        return results
+    }
+
+    nonisolated static func notificationMetadata(
+        for number: String
+    ) -> ContactCallMetadata {
+        let trimmed = number.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = normalizedHandle(number)
+        let isNamedSender = isNamedSenderHandle(trimmed)
+        let basic = ContactCallMetadata(
+            rawNumber: number,
+            normalizedNumber: normalized,
+            formattedNumber: isNamedSender || normalized.isEmpty
+                ? (trimmed.isEmpty ? "Unknown" : trimmed)
+                : formatDisplayNumber(normalized),
+            displayName: isNamedSender ? trimmed : nil,
+            contactIdentifier: nil,
+            thumbnailImageData: nil
+        )
+        return isNamedSender
+            ? basic
+            : lookupContact(number: number) ?? basic
     }
 
     private func isUsableAuthorization(
@@ -189,6 +273,112 @@ final class ContactResolver: ObservableObject {
         }
 
         return false
+    }
+
+    nonisolated private static func searchSMSRecipients(
+        query: String,
+        limit: Int
+    ) -> [ContactSMSRecipientSuggestion] {
+        guard !Task.isCancelled else { return [] }
+
+        let status = CNContactStore.authorizationStatus(for: .contacts)
+        let usable: Bool
+        if status == .authorized {
+            usable = true
+        } else if #available(iOS 18.0, *), status == .limited {
+            usable = true
+        } else {
+            usable = false
+        }
+        guard usable else { return [] }
+
+        let keys: [CNKeyDescriptor] = [
+            CNContactPhoneNumbersKey as CNKeyDescriptor,
+            CNContactOrganizationNameKey as CNKeyDescriptor,
+            CNContactThumbnailImageDataKey as CNKeyDescriptor,
+            CNContactFormatter.descriptorForRequiredKeys(for: .fullName)
+        ]
+        let store = CNContactStore()
+        let queryDigits = canonicalDigits(query)
+        let lowerQuery = query.lowercased()
+        var results: [ContactSMSRecipientSuggestion] = []
+        var seen = Set<String>()
+
+        func appendContact(_ contact: CNContact) {
+            guard !Task.isCancelled,
+                  results.count < limit else { return }
+            let fullName = CNContactFormatter.string(from: contact, style: .fullName)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let organization = contact.organizationName
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = (fullName?.isEmpty == false ? fullName : nil)
+                ?? (!organization.isEmpty ? organization : nil)
+                ?? "Contact"
+
+            for labeled in contact.phoneNumbers {
+                guard results.count < limit else { break }
+                let rawPhone = labeled.value.stringValue
+                let phoneDigits = canonicalDigits(rawPhone)
+                let nameMatch = name.lowercased().contains(lowerQuery)
+                let phoneMatch = !queryDigits.isEmpty && (
+                    phoneDigits.contains(queryDigits) ||
+                    queryDigits.contains(phoneDigits) ||
+                    (queryDigits.count >= 7 && phoneDigits.hasSuffix(queryDigits))
+                )
+                guard nameMatch || phoneMatch else { continue }
+
+                let normalized = normalizedHandle(rawPhone)
+                let dedupeKey = contact.identifier + "|" + normalized
+                guard seen.insert(dedupeKey).inserted else { continue }
+
+                results.append(
+                    ContactSMSRecipientSuggestion(
+                        id: dedupeKey,
+                        displayName: name,
+                        phoneNumber: normalized,
+                        formattedNumber: rawPhone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? formatDisplayNumber(normalized)
+                            : rawPhone,
+                        thumbnailImageData: contact.thumbnailImageData
+                    )
+                )
+            }
+        }
+
+        // Name predicates are cheap and give the most useful suggestions first.
+        if queryDigits.isEmpty || query.contains(where: { $0.isLetter }) {
+            do {
+                let predicate = CNContact.predicateForContacts(matchingName: query)
+                let contacts = try store.unifiedContacts(matching: predicate, keysToFetch: keys)
+                for contact in contacts {
+                    guard !Task.isCancelled else { return results }
+                    appendContact(contact)
+                    if results.count >= limit { return results }
+                }
+            } catch {
+                // Fall through to the conservative full scan below.
+            }
+        }
+
+        guard results.count < limit else { return results }
+        do {
+            let request = CNContactFetchRequest(keysToFetch: keys)
+            request.unifyResults = true
+            try store.enumerateContacts(with: request) { contact, stop in
+                if Task.isCancelled {
+                    stop.pointee = true
+                    return
+                }
+                appendContact(contact)
+                if results.count >= limit {
+                    stop.pointee = true
+                }
+            }
+        } catch {
+            return results
+        }
+
+        return results
     }
 
     nonisolated private static func lookupContact(
@@ -387,9 +577,38 @@ final class ContactResolver: ObservableObject {
                     : selectedPhone,
             displayName: name,
             contactIdentifier: contact.identifier,
-            thumbnailImageData:
-                contact.thumbnailImageData
+            thumbnailImageData: contact.thumbnailImageData
         )
+    }
+
+    private func invalidateContactCache() {
+        pendingLookups.values.forEach { $0.cancel() }
+        pendingLookups.removeAll(keepingCapacity: true)
+        metadataCache.removeAll(keepingCapacity: true)
+        suggestionSearchTask?.cancel()
+        suggestionSearchTask = nil
+        suggestionSearchGeneration &+= 1
+    }
+
+    nonisolated private static func lookupCacheKey(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isNamedSenderHandle(trimmed) {
+            return "name:" + trimmed.lowercased()
+        }
+        let digits = canonicalDigits(trimmed)
+        if digits.count >= 9 {
+            return "phone:" + String(digits.suffix(9))
+        }
+        if !digits.isEmpty {
+            return "phone:" + digits
+        }
+        return "name:" + trimmed.lowercased()
+    }
+
+    nonisolated private static func isNamedSenderHandle(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.contains(where: \.isLetter) &&
+            trimmed.caseInsensitiveCompare("Unknown") != .orderedSame
     }
 
     nonisolated private static func matchScore(

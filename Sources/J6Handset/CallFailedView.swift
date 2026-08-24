@@ -44,9 +44,7 @@ struct CallFailedView: View {
                             : number
                     )
                     .font(.system(size: 17))
-                    .foregroundStyle(
-                        .white.opacity(0.65)
-                    )
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.55)
                 }
@@ -78,6 +76,7 @@ struct CallFailedView: View {
                             .glassProminent
                         )
                         .tint(.green)
+                        .foregroundStyle(.white)
 
                         Button("Dismiss") {
                             onCancel()
@@ -96,41 +95,41 @@ struct CallFailedView: View {
                 .padding(.horizontal, 22)
                 .padding(.bottom, 44)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(.primary)
         }
         .ignoresSafeArea()
-        .preferredColorScheme(.dark)
     }
 }
 
 private struct CallFailedBackdrop: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(
-                        red: 0.055,
-                        green: 0.065,
-                        blue: 0.11
-                    ),
-                    Color(
-                        red: 0.11,
-                        green: 0.055,
-                        blue: 0.08
-                    )
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            Color(uiColor: .systemBackground)
 
             RadialGradient(
                 colors: [
-                    Color.red.opacity(0.16),
+                    Color.red.opacity(
+                        colorScheme == .dark ? 0.20 : 0.10
+                    ),
                     .clear
                 ],
                 center: .bottomTrailing,
                 startRadius: 20,
                 endRadius: 480
+            )
+
+            RadialGradient(
+                colors: [
+                    AppTheme.tint.opacity(
+                        colorScheme == .dark ? 0.14 : 0.07
+                    ),
+                    .clear
+                ],
+                center: .topLeading,
+                startRadius: 10,
+                endRadius: 520
             )
         }
     }

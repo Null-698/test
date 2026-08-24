@@ -4,6 +4,8 @@
 <dict>
 	<key>UIDesignRequiresCompatibility</key>
 	<false/>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>CFBundleDisplayName</key>
 	<string>Cellular</string>
 	<key>NSMicrophoneUsageDescription</key>
@@ -19,6 +21,41 @@
 		<string>voip</string>
 	</array>
 	<key>NSContactsUsageDescription</key>
-	<string>Cellular uses your contacts to show caller names and contact photos.</string>
+	<string>Cellular uses your contacts to show caller identity and let you choose people to call or message.</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INStartCallIntent</string>
+		<string>INStartAudioCallIntent</string>
+	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>CFBundleIconFiles</key>
+	<array>
+		<string>AppIcon20x20</string>
+		<string>AppIcon29x29</string>
+		<string>AppIcon40x40</string>
+		<string>AppIcon60x60</string>
+	</array>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundleIconName</key>
+		<string>AppIcon</string>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>AppIcon20x20</string>
+				<string>AppIcon29x29</string>
+				<string>AppIcon40x40</string>
+				<string>AppIcon60x60</string>
+			</array>
+			<key>CFBundleIconName</key>
+			<string>AppIcon</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

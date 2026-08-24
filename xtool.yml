@@ -2,3 +2,15 @@ version: 1
 bundleID: com.regis.j6handset
 product: J6Handset
 infoPath: Info.plist
+iconPath: Resources/AppIcon.png
+resources:
+  - Resources/Assets.car
+  - Resources/AppIcon20x20@2x.png
+  - Resources/AppIcon20x20@3x.png
+  - Resources/AppIcon29x29@2x.png
+  - Resources/AppIcon29x29@3x.png
+  - Resources/AppIcon40x40@2x.png
+  - Resources/AppIcon40x40@3x.png
+  - Resources/AppIcon60x60@2x.png
+  - Resources/AppIcon60x60@3x.png
+  - Resources/AppIcon1024x1024.png

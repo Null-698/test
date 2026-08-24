@@ -10,25 +10,17 @@ enum LocalIPAddress {
         defer { freeifaddrs(interfaces) }
 
         var pointer: UnsafeMutablePointer<ifaddrs>? = first
-        var fallback: String?
-
         while let current = pointer {
             defer { pointer = current.pointee.ifa_next }
 
-            guard let addressPointer = current.pointee.ifa_addr else {
+            guard let addressPointer = current.pointee.ifa_addr,
+                  addressPointer.pointee.sa_family == UInt8(AF_INET),
+                  String(cString: current.pointee.ifa_name) == "en0"
+            else {
                 continue
             }
 
-            guard addressPointer.pointee.sa_family == UInt8(AF_INET) else {
-                continue
-            }
-
-            let name = String(cString: current.pointee.ifa_name)
-            if name == "lo0" {
-                continue
-            }
-
-            let address: String? = addressPointer.withMemoryRebound(
+            return addressPointer.withMemoryRebound(
                 to: sockaddr_in.self,
                 capacity: 1
             ) { sinPointer in
@@ -49,22 +41,11 @@ enum LocalIPAddress {
 
                 return String(cString: buffer)
             }
-
-            guard let address else {
-                continue
-            }
-
-            // Wi-Fi on iOS is normally en0. Prefer it, but keep a
-            // non-loopback IPv4 fallback for unusual interface layouts.
-            if name == "en0" {
-                return address
-            }
-
-            if fallback == nil {
-                fallback = address
-            }
         }
 
-        return fallback
+        // Cellular/VPN addresses are deliberately not valid AUDIO_PEER
+        // endpoints. When Wi-Fi is absent, wait until en0 returns (home WLAN
+        // or the J6 hotspot) and BLE will re-advertise that address.
+        return nil
     }
 }

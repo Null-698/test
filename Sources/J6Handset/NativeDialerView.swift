@@ -5,7 +5,6 @@ struct NativeDialerView: View {
     @EnvironmentObject private var ble: BLECallController
     @EnvironmentObject private var callKit: CallKitCoordinator
     @EnvironmentObject private var contacts: ContactResolver
-    @Environment(\.colorScheme) private var colorScheme
 
     @State private var resolvedName = ""
     @State private var lookupTask: Task<Void, Never>?
@@ -27,15 +26,12 @@ struct NativeDialerView: View {
     ]
 
     var body: some View {
-        GeometryReader { proxy in
+        GeometryReader { _ in
             ZStack {
                 DialerBackdrop()
 
                 VStack(spacing: 0) {
-                    header
-                        .padding(.top, 14)
-
-                    Spacer(minLength: 18)
+                    Spacer(minLength: 22)
 
                     numberCard
                         .padding(.horizontal, 24)
@@ -53,7 +49,29 @@ struct NativeDialerView: View {
                     Spacer(minLength: 18)
                 }
                 .padding(.bottom, 12)
+
             }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            HStack {
+                Spacer(minLength: 0)
+                connectionIndicator
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 4)
+            .padding(.bottom, 6)
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { ble.isUssdSheetPresented },
+                set: { presented in
+                    if !presented {
+                        ble.dismissUssdSheet()
+                    }
+                }
+            )
+        ) {
+            UssdResultSheet(ble: ble)
         }
         .toolbar(.hidden, for: .navigationBar)
         .onChange(of: ble.dialNumber) {
@@ -65,68 +83,37 @@ struct NativeDialerView: View {
         }
     }
 
-    private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Keypad")
-                    .font(
-                        .system(
-                            size: 34,
-                            weight: .bold,
-                            design: .rounded
-                        )
-                    )
-
-                Text(
+    private var connectionIndicator: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(
                     ble.isConnected
-                        ? "J6 connected"
-                        : "J6 disconnected"
+                        ? Color.green
+                        : Color.secondary.opacity(0.35)
                 )
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            }
+                .frame(width: 8, height: 8)
 
-            Spacer()
-
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(
-                        ble.isConnected
-                            ? Color.green
-                            : Color.secondary.opacity(0.35)
-                    )
-                    .frame(width: 8, height: 8)
-
-                Image(
-                    systemName:
-                        "iphone.radiowaves.left.and.right"
-                )
+            Image(systemName: "iphone.radiowaves.left.and.right")
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 13)
-            .frame(height: 40)
-            .glassEffect(
-                .regular,
-                in: .capsule
-            )
         }
-        .padding(.horizontal, 22)
+        .padding(.horizontal, 13)
+        .frame(height: 40)
+        .glassEffect(
+            .regular,
+            in: .capsule
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            ble.isConnected
+                ? "Connected"
+                : "Disconnected"
+        )
     }
 
     private var numberCard: some View {
         VStack(spacing: 7) {
-            if ble.dialNumber.isEmpty {
-                Text("Enter a number")
-                    .font(
-                        .system(
-                            size: 28,
-                            weight: .medium,
-                            design: .rounded
-                        )
-                    )
-                    .foregroundStyle(.secondary)
-            } else {
+            if !ble.dialNumber.isEmpty {
                 Text(displayDialNumber)
                     .font(
                         .system(
@@ -146,7 +133,7 @@ struct NativeDialerView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 } else {
-                    Text("Cellular call")
+                    Text(isLikelyUssd(ble.dialNumber) ? "USSD" : "Cellular call")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -155,6 +142,24 @@ struct NativeDialerView: View {
         .frame(maxWidth: .infinity)
         .frame(height: 96)
         .padding(.horizontal, 18)
+        .contentShape(Rectangle())
+        .contextMenu {
+            if !ble.dialNumber.isEmpty {
+                Button {
+                    UIPasteboard.general.string = ble.dialNumber
+                    haptic(.light)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+            }
+
+            Button {
+                pasteDialNumber()
+            } label: {
+                Label("Paste", systemImage: "doc.on.clipboard")
+            }
+        }
+        .accessibilityHint("Touch and hold to copy or paste a phone number")
         .glassEffect(
             .regular,
             in: .rect(cornerRadius: 26)
@@ -186,36 +191,15 @@ struct NativeDialerView: View {
         Button {
             appendDigit(digit)
         } label: {
-            VStack(spacing: -1) {
-                Text(digit)
-                    .font(
-                        .system(
-                            size: 31,
-                            weight: .medium,
-                            design: .rounded
-                        )
-                    )
-                    .monospacedDigit()
-
-                Text(letters)
-                    .font(
-                        .system(
-                            size: 9.5,
-                            weight: .semibold
-                        )
-                    )
-                    .tracking(1.8)
-                    .frame(height: 11)
-                    .opacity(
-                        letters.isEmpty
-                            ? 0
-                            : 0.78
-                    )
-            }
-            .frame(width: 78, height: 78)
+            DialPadKeyFace(
+                digit: digit,
+                letters: letters,
+                diameter: 78
+            )
         }
         .buttonStyle(.glass(.clear))
         .buttonBorderShape(.circle)
+        .foregroundStyle(.primary)
         .simultaneousGesture(
             LongPressGesture(
                 minimumDuration: 0.43
@@ -257,6 +241,7 @@ struct NativeDialerView: View {
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
+                .foregroundStyle(.primary)
                 .transition(
                     .opacity.combined(
                         with: .scale
@@ -277,6 +262,7 @@ struct NativeDialerView: View {
             .buttonStyle(.glassProminent)
             .buttonBorderShape(.circle)
             .tint(.green)
+            .foregroundStyle(.white)
             .disabled(!ble.isConnected)
             .opacity(ble.isConnected ? 1 : 0.45)
 
@@ -290,6 +276,10 @@ struct NativeDialerView: View {
     }
 
     private var displayDialNumber: String {
+        if isLikelyUssd(ble.dialNumber) {
+            return ble.dialNumber
+        }
+
         let basic =
             contacts.basicMetadata(
                 for: ble.dialNumber
@@ -312,12 +302,61 @@ struct NativeDialerView: View {
             return
         }
 
-        lastDialedNumber = ble.dialNumber
+        let numberToDial = ble.dialNumber
+        lastDialedNumber = numberToDial
         haptic(.medium)
 
+        if isLikelyUssd(numberToDial) {
+            if ble.sendUssd(numberToDial) {
+                ble.dialNumber = ""
+                resolvedName = ""
+            }
+            return
+        }
+
         callKit.startOutgoing(
-            number: ble.dialNumber
+            number: numberToDial
         )
+
+        // prepareOutgoingUI() moves the BLE presentation state to DIALING
+        // synchronously when the request is accepted. Only clear the field
+        // after that successful transition, not if CallKit rejected a second
+        // outgoing request while another call is already present.
+        if ble.uiCallState == "DIALING" ||
+           ble.uiCallState == "CONNECTING" {
+            ble.dialNumber = ""
+            resolvedName = ""
+        }
+    }
+
+    private func pasteDialNumber() {
+        guard let clipboard = UIPasteboard.general.string else {
+            haptic(.light)
+            return
+        }
+
+        var normalized = ""
+        for character in clipboard {
+            if character.isNumber ||
+               character == "*" ||
+               character == "#" ||
+               (character == "+" && normalized.isEmpty) {
+                normalized.append(character)
+            }
+
+            if normalized.count >= 32 {
+                break
+            }
+        }
+
+        guard !normalized.isEmpty else {
+            UINotificationFeedbackGenerator()
+                .notificationOccurred(.error)
+            return
+        }
+
+        ble.dialNumber = normalized
+        haptic(.medium)
     }
 
     private func appendDigit(
@@ -336,6 +375,10 @@ struct NativeDialerView: View {
     ) {
         lookupTask?.cancel()
         resolvedName = ""
+
+        guard !isLikelyUssd(number) else {
+            return
+        }
 
         guard number
             .filter({ $0.isNumber })
@@ -369,6 +412,20 @@ struct NativeDialerView: View {
         }
     }
 
+    private func isLikelyUssd(_ value: String) -> Bool {
+        let code = value.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard code.count >= 2,
+              code.first == "*" || code.first == "#",
+              code.last == "#" else {
+            return false
+        }
+        return code.allSatisfy {
+            $0.isNumber || $0 == "*" || $0 == "#" || $0 == "+"
+        }
+    }
+
     private func haptic(
         _ style:
             UIImpactFeedbackGenerator.FeedbackStyle
@@ -380,31 +437,143 @@ struct NativeDialerView: View {
     }
 }
 
-private struct DialerBackdrop: View {
+private struct UssdResultSheet: View {
+    @ObservedObject var ble: BLECallController
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(spacing: 12) {
+                        if ble.ussdPending {
+                            ProgressView()
+                        } else {
+                            Image(
+                                systemName: ble.ussdSucceeded
+                                    ? "checkmark.circle.fill"
+                                    : "exclamationmark.circle.fill"
+                            )
+                            .font(.system(size: 25, weight: .semibold))
+                            .foregroundStyle(
+                                ble.ussdSucceeded ? Color.green : Color.orange
+                            )
+                        }
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(ble.ussdPending ? "USSD request" : "USSD response")
+                                .font(.headline)
+                            Text(ble.ussdRequest)
+                                .font(.system(.subheadline, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if ble.ussdPending {
+                        Text("Waiting for the mobile network…")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(ble.ussdResponse)
+                            .font(.body)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if !ble.ussdResponse.isEmpty {
+                            Button {
+                                UIPasteboard.general.string = ble.ussdResponse
+                                UIImpactFeedbackGenerator(style: .light)
+                                    .impactOccurred()
+                            } label: {
+                                Label("Copy Response", systemImage: "doc.on.doc")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+                .padding(22)
+            }
+            .navigationTitle("USSD")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        ble.dismissUssdSheet()
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+private struct DialPadKeyFace: View {
+    let digit: String
+    let letters: String
+    let diameter: CGFloat
+
     var body: some View {
         ZStack {
-            Color(uiColor: .systemBackground)
+            if letters.isEmpty {
+                primaryGlyph
+                    .position(
+                        x: diameter / 2,
+                        y: diameter / 2
+                    )
+            } else {
+                primaryGlyph
+                    .position(
+                        x: diameter / 2,
+                        y: diameter / 2 - 7.5
+                    )
 
-            RadialGradient(
-                colors: [
-                    Color.accentColor.opacity(0.11),
-                    .clear
-                ],
-                center: .topTrailing,
-                startRadius: 20,
-                endRadius: 420
-            )
-
-            RadialGradient(
-                colors: [
-                    Color.green.opacity(0.06),
-                    .clear
-                ],
-                center: .bottomLeading,
-                startRadius: 20,
-                endRadius: 360
-            )
+                Text(letters)
+                    .font(
+                        .system(
+                            size: 9.5,
+                            weight: .semibold
+                        )
+                    )
+                    .tracking(1.65)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .position(
+                        x: diameter / 2,
+                        y: diameter / 2 + 17.5
+                    )
+            }
         }
-        .ignoresSafeArea()
+        .frame(width: diameter, height: diameter)
+        .contentShape(Circle())
+    }
+
+    @ViewBuilder
+    private var primaryGlyph: some View {
+        if digit == "*" {
+            Image(systemName: "asterisk")
+                .font(.system(size: 28, weight: .medium))
+        } else if digit == "#" {
+            Image(systemName: "number")
+                .font(.system(size: 27, weight: .medium))
+        } else {
+            Text(digit)
+                .font(
+                    .system(
+                        size: 31,
+                        weight: .medium,
+                        design: .rounded
+                    )
+                )
+                .monospacedDigit()
+                .fixedSize()
+        }
+    }
+}
+
+private struct DialerBackdrop: View {
+    var body: some View {
+        Color(uiColor: .systemBackground)
+            .ignoresSafeArea()
     }
 }

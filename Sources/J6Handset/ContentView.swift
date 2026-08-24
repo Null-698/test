@@ -1,24 +1,111 @@
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var ble: BLECallController
     @EnvironmentObject private var relay: RelayController
     @EnvironmentObject private var callKit: CallKitCoordinator
     @EnvironmentObject private var contacts: ContactResolver
+    @EnvironmentObject private var sms: SMSController
+
+    @ObservedObject private var systemCallRequests =
+        SystemCallRequestCenter.shared
 
     @State private var selectedTab: RootTab = .keypad
     @State private var callScreenMinimized = false
+    @State private var selectedContact: CellularContactSelection?
 
     var body: some View {
         ZStack {
-            TabView(selection: $selectedTab) {
+            TabView(
+                selection: $selectedTab
+            ) {
                 Tab(
                     "Keypad",
                     systemImage: "circle.grid.3x3.fill",
                     value: RootTab.keypad
                 ) {
                     keypadScreen
+                }
+
+                Tab(
+                    "Recents",
+                    systemImage: "clock.fill",
+                    value: RootTab.recents
+                ) {
+                    NavigationStack {
+                        RecentsView()
+                            .safeAreaInset(
+                                edge: .top,
+                                spacing: 10
+                            ) {
+                                if hasVisibleCall &&
+                                   callScreenMinimized {
+                                    SystemCallStrip()
+                                        .padding(.horizontal, 16)
+                                        .onTapGesture {
+                                            callScreenMinimized = false
+                                        }
+                                }
+                            }
+                    }
+                }
+
+                Tab(
+                    "Contacts",
+                    systemImage: "person.crop.circle.fill",
+                    value: RootTab.contacts
+                ) {
+                    NavigationStack {
+                        CellularContactsListView { selection in
+                            selectedContact = selection
+                        }
+                        .navigationDestination(
+                            item: $selectedContact
+                        ) { selection in
+                            CellularContactDetailView(
+                                selection: selection,
+                                onCall: { number in
+                                    selectedContact = nil
+                                    selectedTab = .keypad
+                                    callScreenMinimized = false
+                                    callKit.startOutgoing(
+                                        number: number
+                                    )
+                                },
+                                onMessage: { number in
+                                    selectedContact = nil
+                                    selectedTab = .messages
+                                    sms.requestCompose(to: number)
+                                }
+                            )
+                        }
+                        .safeAreaInset(
+                            edge: .top,
+                            spacing: 10
+                        ) {
+                            if hasVisibleCall &&
+                               callScreenMinimized {
+                                SystemCallStrip()
+                                    .padding(.horizontal, 16)
+                                    .onTapGesture {
+                                        callScreenMinimized = false
+                                    }
+                            }
+                        }
+                    }
+                }
+
+                Tab(
+                    "Messages",
+                    systemImage: sms.unreadCount > 0 ? "message.badge.fill" : "message.fill",
+                    value: RootTab.messages
+                ) {
+                    NavigationStack {
+                        SMSInboxView()
+                    }
                 }
 
                 Tab(
@@ -30,7 +117,7 @@ struct ContentView: View {
                 }
             }
             .tabBarMinimizeBehavior(.never)
-            .tint(.primary)
+            .tint(AppTheme.tint)
 
             if hasVisibleCall &&
                !callScreenMinimized {
@@ -77,12 +164,60 @@ struct ContentView: View {
             if isCallPresentationState(newState) &&
                !isCallPresentationState(oldState) {
                 callScreenMinimized = false
+                dismissContactsFlow()
             }
 
             if newState == "IDLE" ||
                newState == "DISCONNECTED" {
                 callScreenMinimized = false
             }
+        }
+        .onAppear {
+            sms.setApplicationActive(scenePhase == .active)
+            sms.requestNotificationPermissionIfNeeded()
+            if sms.requestedThreadKey != nil ||
+               sms.requestedComposeRecipient != nil {
+                selectedTab = .messages
+            }
+            handlePendingSystemCall()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            sms.setApplicationActive(newPhase == .active)
+        }
+        .onContinueUserActivity(
+            SystemCallActivity.modernType
+        ) { userActivity in
+            _ = systemCallRequests.receive(userActivity)
+        }
+        .onContinueUserActivity(
+            SystemCallActivity.legacyAudioType
+        ) { userActivity in
+            _ = systemCallRequests.receive(userActivity)
+        }
+        .onOpenURL { url in
+            _ = systemCallRequests.receive(url)
+        }
+        .onChange(of: systemCallRequests.pendingRequest) {
+            _, _ in
+            handlePendingSystemCall()
+        }
+        .onChange(of: sms.requestedThreadKey) { _, threadKey in
+            if threadKey != nil {
+                selectedTab = .messages
+            }
+        }
+        .onChange(of: sms.requestedComposeRecipient) { _, recipient in
+            if recipient != nil {
+                selectedTab = .messages
+            }
+        }
+        .fileExporter(
+            isPresented: $relay.debugExportRequested,
+            document: DebugLogDocument(text: relay.debugExportText),
+            contentType: .plainText,
+            defaultFilename: relay.debugExportFilename
+        ) { result in
+            relay.debugExportCompleted(result)
         }
     }
 
@@ -164,8 +299,8 @@ struct ContentView: View {
 
                 Text(
                     ble.isConnected
-                        ? "J6 connected"
-                        : "J6 disconnected"
+                        ? "Relay connected"
+                        : "Relay disconnected"
                 )
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -212,6 +347,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.glass)
                 .controlSize(.large)
+                .tint(AppTheme.tint)
             }
 
             if callKit.contactMatched {
@@ -237,7 +373,7 @@ struct ContentView: View {
 
     private var bluetoothCard: some View {
         SettingsCard(
-            title: "J6 Connection",
+            title: "Relay Connection",
             subtitle: "Bluetooth control channel",
             symbol: "antenna.radiowaves.left.and.right"
         ) {
@@ -251,14 +387,14 @@ struct ContentView: View {
 
             Divider()
 
-            Text(ble.bluetoothStatus)
+            Text(relayDisplayText(ble.bluetoothStatus))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             SettingsRow(
                 title: "Audio peer",
-                value: ble.audioPeerStatus
+                value: relayDisplayText(ble.audioPeerStatus)
             )
 
             HStack(spacing: 12) {
@@ -270,6 +406,7 @@ struct ContentView: View {
                     ble.scan()
                 }
                 .buttonStyle(.glassProminent)
+                .tint(AppTheme.tint)
                 .disabled(
                     ble.isScanning ||
                     ble.isConnected
@@ -280,6 +417,7 @@ struct ContentView: View {
                         ble.disconnect()
                     }
                     .buttonStyle(.glass)
+                    .tint(AppTheme.tint)
                 }
             }
 
@@ -329,9 +467,10 @@ struct ContentView: View {
                 )
             }
             .buttonStyle(.glass)
+            .tint(AppTheme.tint)
 
             TextField(
-                "J6 Wi-Fi IP",
+                "Relay Wi-Fi IP",
                 text: $relay.j6IP
             )
             .textInputAutocapitalization(.never)
@@ -343,6 +482,7 @@ struct ContentView: View {
                 .regular,
                 in: .rect(cornerRadius: 15)
             )
+            .tint(AppTheme.tint)
 
             Divider()
 
@@ -364,102 +504,58 @@ struct ContentView: View {
 
             SettingsRow(
                 title: "Status",
-                value: relay.status
+                value: relayDisplayText(relay.status)
             )
 
-            DisclosureGroup("Diagnostics") {
+            DisclosureGroup("Advanced diagnostics") {
                 VStack(spacing: 12) {
+                    SettingsRow(
+                        title: "Renderer",
+                        value: "Stage 2 direct 48k v19.11 Native Call Controls"
+                    )
+
                     SettingsRow(
                         title: "Auto restarts",
                         value: "\(relay.audioRestartCount)",
                         monospaced: true
                     )
 
-                    SettingsRow(
-                        title: "Mic → J6",
-                        value: "\(relay.sentFrames)",
-                        monospaced: true
+                    RelayDiagnosticsRows(
+                        diagnostics: relay.diagnostics
                     )
 
-                    SettingsRow(
-                        title: "J6 → iPhone",
-                        value: "\(relay.receivedFrames)",
-                        monospaced: true
+                    Divider()
+
+                    Toggle(
+                        "Diagnostic logging",
+                        isOn: Binding(
+                            get: { relay.diagnosticLoggingEnabled },
+                            set: { relay.setDiagnosticLoggingEnabled($0) }
+                        )
                     )
+                    .tint(AppTheme.tint)
 
                     SettingsRow(
-                        title: "Mic / caller RMS",
-                        value:
-                            "\(relay.micRMS) / \(relay.remoteRMS)",
-                        monospaced: true
+                        title: "Debug log",
+                        value: relay.debugLogStatus
                     )
 
-                    SettingsRow(
-                        title: "Jitter q / target",
-                        value:
-                            "\(relay.jitterBuffered) / \(relay.jitterTarget)",
-                        monospaced: true
-                    )
+                    Button("Export Debug Log") {
+                        relay.exportDebugLogNow()
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(AppTheme.tint)
+                    .disabled(!relay.diagnosticLoggingEnabled)
 
-                    SettingsRow(
-                        title: "Network jitter",
-                        value:
-                            String(
-                                format:
-                                    "%.1f ms",
-                                relay.jitterMS
-                            ),
-                        monospaced: true
+                    Text(
+                        relay.diagnosticLoggingEnabled
+                            ? "Diagnostic file logging is enabled. Export Debug Log creates a snapshot you can save to Downloads."
+                            : "Diagnostic file logging is off. No diagnostic file is created or written until you explicitly enable it."
                     )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                    SettingsRow(
-                        title: "PLC / late / stale",
-                        value:
-                            "\(relay.plcFrames) / \(relay.lateFrames) / \(relay.latencyDrops)",
-                        monospaced: true
-                    )
-
-                    SettingsRow(
-                        title: "Clock -/+ samples",
-                        value:
-                            "\(relay.clockShortens) / \(relay.clockStretches)",
-                        monospaced: true
-                    )
-
-                    SettingsRow(
-                        title: "Wire bad / resets",
-                        value:
-                            "\(relay.badWirePackets) / \(relay.streamResets)",
-                        monospaced: true
-                    )
-
-                    SettingsRow(
-                        title: "Audio route",
-                        value: relay.audioRoute
-                    )
-
-                    SettingsRow(
-                        title: "iOS I/O buffer",
-                        value:
-                            String(
-                                format:
-                                    "%.1f ms",
-                                relay.ioBufferMS
-                            ),
-                        monospaced: true
-                    )
-
-                    SettingsRow(
-                        title: "Input / output",
-                        value:
-                            String(
-                                format:
-                                    "%.1f / %.1f ms",
-                                relay.inputLatencyMS,
-                                relay.outputLatencyMS
-                            ),
-                        monospaced: true
-                    )
                 }
                 .padding(.top, 12)
             }
@@ -521,10 +617,37 @@ struct ContentView: View {
             ? number
             : basic.formattedNumber
     }
+
+    private func relayDisplayText(_ value: String) -> String {
+        value.replacingOccurrences(
+            of: "J6",
+            with: "Relay",
+            options: [.caseInsensitive]
+        )
+    }
+
+    private func handlePendingSystemCall() {
+        guard let request = systemCallRequests.pendingRequest,
+              let number = systemCallRequests.consume(request)
+        else {
+            return
+        }
+
+        selectedTab = .keypad
+        callScreenMinimized = false
+        callKit.startOutgoing(number: number)
+    }
+
+    private func dismissContactsFlow() {
+        selectedContact = nil
+    }
 }
 
 private enum RootTab: Hashable {
     case keypad
+    case recents
+    case messages
+    case contacts
     case settings
 }
 
@@ -601,21 +724,108 @@ private struct SettingsRow: View {
     }
 }
 
-private struct SettingsBackdrop: View {
-    var body: some View {
-        ZStack {
-            Color(uiColor: .systemGroupedBackground)
+private struct RelayDiagnosticsRows: View {
+    @ObservedObject var diagnostics: RelayDiagnostics
 
-            RadialGradient(
-                colors: [
-                    Color.accentColor.opacity(0.10),
-                    .clear
-                ],
-                center: .topTrailing,
-                startRadius: 20,
-                endRadius: 420
+    var body: some View {
+        let stats = diagnostics.snapshot
+
+        Group {
+            SettingsRow(
+                title: "Uplink frames",
+                value: "\(stats.sentFrames)",
+                monospaced: true
+            )
+
+            SettingsRow(
+                title: "Downlink frames",
+                value: "\(stats.receivedFrames)",
+                monospaced: true
+            )
+
+            SettingsRow(
+                title: "Mic / caller RMS",
+                value: "\(stats.micRMS) / \(stats.remoteRMS)",
+                monospaced: true
+            )
+
+            SettingsRow(
+                title: "Direct FIFO / start",
+                value: "\(stats.directBuffered) / \(stats.directStartFrames)",
+                monospaced: true
+            )
+
+            SettingsRow(
+                title: "Seq gaps / late / overflow",
+                value: "\(stats.sequenceGaps) / \(stats.lateFrames) / \(stats.latencyDrops)",
+                monospaced: true
+            )
+
+            SettingsRow(
+                title: "Renderer underruns",
+                value: "\(stats.rendererUnderruns)",
+                monospaced: true
+            )
+
+            SettingsRow(
+                title: "Fixed rebuffers",
+                value: "\(stats.rebufferEvents)",
+                monospaced: true
+            )
+
+            SettingsRow(
+                title: "Max packet gap",
+                value: String(
+                    format: "%.1f ms",
+                    stats.maxPacketGapMS
+                ),
+                monospaced: true
+            )
+
+            SettingsRow(
+                title: "Rate conversion",
+                value: stats.audioRoute.contains("Bluetooth")
+                    ? "Route-dependent"
+                    : "Direct 48 kHz",
+                monospaced: true
+            )
+
+            SettingsRow(
+                title: "Wire bad / resets",
+                value: "\(stats.badWirePackets) / \(stats.streamResets)",
+                monospaced: true
+            )
+
+            SettingsRow(
+                title: "Audio route",
+                value: stats.audioRoute
+            )
+
+            SettingsRow(
+                title: "iOS I/O buffer",
+                value: String(
+                    format: "%.1f ms",
+                    stats.ioBufferMS
+                ),
+                monospaced: true
+            )
+
+            SettingsRow(
+                title: "Input / output",
+                value: String(
+                    format: "%.1f / %.1f ms",
+                    stats.inputLatencyMS,
+                    stats.outputLatencyMS
+                ),
+                monospaced: true
             )
         }
-        .ignoresSafeArea()
+    }
+}
+
+private struct SettingsBackdrop: View {
+    var body: some View {
+        Color(uiColor: .systemBackground)
+            .ignoresSafeArea()
     }
 }

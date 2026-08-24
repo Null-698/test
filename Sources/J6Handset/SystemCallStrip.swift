@@ -63,6 +63,7 @@ struct SystemCallStrip: View {
                     .frame(width: 34, height: 34)
                 }
                 .buttonStyle(CompactCallButtonStyle())
+                .foregroundStyle(.primary)
                 .accessibilityLabel(
                     callKit.isMuted ? "Unmute" : "Mute"
                 )
