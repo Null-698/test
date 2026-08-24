@@ -535,12 +535,12 @@ struct CellularContactDetailView: View {
     ) -> some View {
         List {
             Section {
-                VStack(spacing: 16) {
+                VStack(spacing: 12) {
                     ContactAvatarView(
                         initials: contact.initials,
                         imageData: contact.imageData,
                         cacheKey: "contact-detail:\(contact.id)",
-                        size: 112
+                        size: 88
                     )
 
                     VStack(spacing: 4) {
@@ -560,7 +560,7 @@ struct CellularContactDetailView: View {
                     actionRow(contact.phoneNumbers)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
+                .padding(.vertical, 8)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
             }
@@ -607,6 +607,7 @@ struct CellularContactDetailView: View {
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
+        .contentMargins(.bottom, 32, for: .scrollContent)
     }
 
     private func actionRow(
@@ -724,7 +725,7 @@ private struct ContactActionLabel: View {
                 ? AppTheme.tint
                 : Color.secondary
         )
-        .frame(maxWidth: .infinity, minHeight: 68)
+        .frame(maxWidth: .infinity, minHeight: 60)
         .background(
             Color(uiColor: .secondarySystemGroupedBackground),
             in: .rect(cornerRadius: 16)
@@ -759,7 +760,10 @@ private struct ContactDetailPhotoBackground: View {
                 .blur(radius: 24, opaque: true)
 
                 Color(uiColor: .systemBackground)
-                    .opacity(0.52)
+                    .opacity(0.62)
+
+                Color.black
+                    .opacity(0.18)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
