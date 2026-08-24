@@ -471,28 +471,33 @@ struct CellularContactDetailView: View {
     @State private var state: DetailState = .loading
 
     var body: some View {
-        Group {
-            switch state {
-            case .loading:
-                ProgressView("Loading Contact…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            case .failed(let message):
-                ContentUnavailableView(
-                    "Contact Unavailable",
-                    systemImage: "person.crop.circle.badge.exclamationmark",
-                    description: Text(message)
-                )
-
-            case .loaded(let contact):
-                detailList(contact)
-            }
-        }
-        .background {
+        ZStack {
             detailBackground
+
+            Group {
+                switch state {
+                case .loading:
+                    ProgressView("Loading Contact…")
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity
+                        )
+
+                case .failed(let message):
+                    ContentUnavailableView(
+                        "Contact Unavailable",
+                        systemImage: "person.crop.circle.badge.exclamationmark",
+                        description: Text(message)
+                    )
+
+                case .loaded(let contact):
+                    detailList(contact)
+                }
+            }
         }
         .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Done") {
@@ -531,158 +536,88 @@ struct CellularContactDetailView: View {
         GeometryReader { geometry in
             let compact = geometry.size.height < 500
 
-            ScrollView {
-                LazyVStack(
-                    alignment: .leading,
-                    spacing: compact ? 8 : 16
-                ) {
-                    contactHeader(
-                        contact,
-                        compact: compact
-                    )
-                    actionRow(contact.phoneNumbers)
-                    phoneNumbersSection(contact.phoneNumbers)
+            List {
+                Section {
+                    VStack(spacing: compact ? 8 : 16) {
+                        ContactAvatarView(
+                            initials: contact.initials,
+                            imageData: contact.imageData,
+                            cacheKey: "contact-detail:\(contact.id)",
+                            size: compact ? 80 : 112
+                        )
+
+                        contactIdentity(contact)
+
+                        actionRow(contact.phoneNumbers)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, compact ? 4 : 12)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, compact ? 8 : 18)
-                .padding(.bottom, compact ? 20 : 28)
+
+                if contact.phoneNumbers.isEmpty {
+                    Section {
+                        Text("No phone numbers")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Section("Phone Numbers") {
+                        ForEach(contact.phoneNumbers) { phone in
+                            Button {
+                                complete(.call(phone.number))
+                            } label: {
+                                HStack(spacing: 12) {
+                                    VStack(
+                                        alignment: .leading,
+                                        spacing: 3
+                                    ) {
+                                        Text(phone.displayLabel)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+
+                                        Text(phone.number)
+                                            .font(.body)
+                                            .foregroundStyle(.primary)
+                                    }
+
+                                    Spacer(minLength: 8)
+
+                                    Image(systemName: "phone.fill")
+                                        .foregroundStyle(AppTheme.tint)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(
+                                "Call \(phone.number), \(phone.displayLabel)"
+                            )
+                        }
+                    }
+                }
             }
-            .scrollBounceBehavior(.basedOnSize)
-        }
-    }
-
-    @ViewBuilder
-    private func contactHeader(
-        _ contact: CellularContactDetail,
-        compact: Bool
-    ) -> some View {
-        if compact {
-            HStack(spacing: 14) {
-                ContactAvatarView(
-                    initials: contact.initials,
-                    imageData: contact.imageData,
-                    cacheKey: "contact-detail:\(contact.id)",
-                    size: 60
-                )
-
-                contactIdentity(
-                    contact,
-                    alignment: .leading,
-                    textAlignment: .leading
-                )
-
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
-            .contactDetailSurface(cornerRadius: 20)
-        } else {
-            VStack(spacing: 12) {
-                ContactAvatarView(
-                    initials: contact.initials,
-                    imageData: contact.imageData,
-                    cacheKey: "contact-detail:\(contact.id)",
-                    size: 104
-                )
-
-                contactIdentity(
-                    contact,
-                    alignment: .center,
-                    textAlignment: .center
-                )
-            }
-            .frame(maxWidth: .infinity)
-            .padding(16)
-            .contactDetailSurface(cornerRadius: 24)
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
         }
     }
 
     private func contactIdentity(
-        _ contact: CellularContactDetail,
-        alignment: HorizontalAlignment,
-        textAlignment: TextAlignment
+        _ contact: CellularContactDetail
     ) -> some View {
-        VStack(alignment: alignment, spacing: 4) {
+        VStack(spacing: 4) {
             Text(contact.displayName)
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(.primary)
-                .multilineTextAlignment(textAlignment)
+                .multilineTextAlignment(.center)
                 .lineLimit(2)
 
             if let organization = contact.organization {
                 Text(organization)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .multilineTextAlignment(textAlignment)
+                    .multilineTextAlignment(.center)
                     .lineLimit(2)
             }
-        }
-    }
-
-    @ViewBuilder
-    private func phoneNumbersSection(
-        _ phoneNumbers: [CellularContactPhone]
-    ) -> some View {
-        if phoneNumbers.isEmpty {
-            Label(
-                "No phone numbers",
-                systemImage: "phone.down"
-            )
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .contactDetailSurface(cornerRadius: 18)
-        } else {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Phone Numbers")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 14)
-                    .padding(.top, 9)
-                    .padding(.bottom, 3)
-
-                ForEach(phoneNumbers) { phone in
-                    if phone.id != phoneNumbers.first?.id {
-                        Divider()
-                            .padding(.leading, 14)
-                    }
-
-                    Button {
-                        complete(.call(phone.number))
-                    } label: {
-                        HStack(spacing: 12) {
-                            VStack(
-                                alignment: .leading,
-                                spacing: 2
-                            ) {
-                                Text(phone.displayLabel)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-
-                                Text(phone.number)
-                                    .font(.body)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.72)
-                            }
-
-                            Spacer(minLength: 8)
-
-                            Image(systemName: "phone.fill")
-                                .foregroundStyle(AppTheme.tint)
-                        }
-                        .frame(minHeight: 44)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 14)
-                    .accessibilityLabel(
-                        "Call \(phone.number), \(phone.displayLabel)"
-                    )
-                }
-            }
-            .padding(.bottom, 4)
-            .contactDetailSurface(cornerRadius: 18)
         }
     }
 
@@ -803,7 +738,7 @@ private struct ContactActionLabel: View {
         )
         .frame(maxWidth: .infinity, minHeight: 56)
         .background(
-            .regularMaterial,
+            Color(uiColor: .secondarySystemGroupedBackground),
             in: .rect(cornerRadius: 16)
         )
         .overlay {
@@ -814,40 +749,6 @@ private struct ContactActionLabel: View {
                 )
         }
         .contentShape(.rect(cornerRadius: 16))
-    }
-}
-
-private struct ContactDetailSurface: ViewModifier {
-    let cornerRadius: CGFloat
-
-    func body(content: Content) -> some View {
-        content
-            .background(
-                .regularMaterial,
-                in: .rect(cornerRadius: cornerRadius)
-            )
-            .overlay {
-                RoundedRectangle(
-                    cornerRadius: cornerRadius,
-                    style: .continuous
-                )
-                .stroke(
-                    Color(uiColor: .separator).opacity(0.32),
-                    lineWidth: 0.5
-                )
-            }
-    }
-}
-
-private extension View {
-    func contactDetailSurface(
-        cornerRadius: CGFloat
-    ) -> some View {
-        modifier(
-            ContactDetailSurface(
-                cornerRadius: cornerRadius
-            )
-        )
     }
 }
 
@@ -865,24 +766,9 @@ private struct ContactDetailPhotoBackground: View {
                     imageData: imageData,
                     cacheKey: cacheKey
                 )
-                .scaleEffect(1.12)
-                .blur(radius: 24)
-
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-
-                LinearGradient(
-                    colors: [
-                        Color(uiColor: .systemBackground).opacity(0.10),
-                        Color(uiColor: .systemGroupedBackground).opacity(0.68)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
             }
         }
         .ignoresSafeArea()
-        .clipped()
         .allowsHitTesting(false)
     }
 }
