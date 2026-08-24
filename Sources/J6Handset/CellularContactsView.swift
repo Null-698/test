@@ -7,6 +7,11 @@ struct CellularContactSelection: Identifiable, Hashable, Sendable {
     let id: String
 }
 
+enum CellularContactAction: Equatable, Sendable {
+    case call(String)
+    case message(String)
+}
+
 private struct CellularContactPhone: Identifiable, Equatable, Sendable {
     let id: String
     let label: String
@@ -457,9 +462,10 @@ private struct CellularContactRow: View {
 }
 
 struct CellularContactDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+
     let selection: CellularContactSelection
-    let onCall: @MainActor (String) -> Void
-    let onMessage: @MainActor (String) -> Void
+    let onAction: @MainActor (CellularContactAction) -> Void
 
     @State private var state: DetailState = .loading
 
@@ -484,6 +490,13 @@ struct CellularContactDetailView: View {
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") {
+                    dismiss()
+                }
+            }
+        }
         .task(id: selection.id) {
             await loadContact()
         }
@@ -540,7 +553,7 @@ struct CellularContactDetailView: View {
                 Section("Phone Numbers") {
                     ForEach(contact.phoneNumbers) { phone in
                         Button {
-                            onCall(phone.number)
+                            complete(.call(phone.number))
                         } label: {
                             HStack(spacing: 12) {
                                 VStack(
@@ -582,16 +595,23 @@ struct CellularContactDetailView: View {
                 title: "Call",
                 symbol: "phone.fill",
                 phoneNumbers: phoneNumbers,
-                action: onCall
+                action: { complete(.call($0)) }
             )
 
             contactAction(
                 title: "Message",
                 symbol: "message.fill",
                 phoneNumbers: phoneNumbers,
-                action: onMessage
+                action: { complete(.message($0)) }
             )
         }
+    }
+
+    private func complete(
+        _ action: CellularContactAction
+    ) {
+        onAction(action)
+        dismiss()
     }
 
     @ViewBuilder

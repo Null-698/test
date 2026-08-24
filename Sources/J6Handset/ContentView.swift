@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var selectedTab: RootTab = .keypad
     @State private var callScreenMinimized = false
     @State private var selectedContact: CellularContactSelection?
+    @State private var pendingContactAction: CellularContactAction?
 
     var body: some View {
         ZStack {
@@ -62,25 +63,18 @@ struct ContentView: View {
                         CellularContactsListView { selection in
                             selectedContact = selection
                         }
-                        .navigationDestination(
-                            item: $selectedContact
+                        .sheet(
+                            item: $selectedContact,
+                            onDismiss: performPendingContactAction
                         ) { selection in
-                            CellularContactDetailView(
-                                selection: selection,
-                                onCall: { number in
-                                    selectedContact = nil
-                                    selectedTab = .keypad
-                                    callScreenMinimized = false
-                                    callKit.startOutgoing(
-                                        number: number
-                                    )
-                                },
-                                onMessage: { number in
-                                    selectedContact = nil
-                                    selectedTab = .messages
-                                    sms.requestCompose(to: number)
+                            NavigationStack {
+                                CellularContactDetailView(
+                                    selection: selection
+                                ) { action in
+                                    pendingContactAction = action
                                 }
-                            )
+                            }
+                            .presentationDetents([.medium, .large])
                         }
                         .safeAreaInset(
                             edge: .top,
@@ -640,6 +634,43 @@ struct ContentView: View {
 
     private func dismissContactsFlow() {
         selectedContact = nil
+        pendingContactAction = nil
+    }
+
+    private func performPendingContactAction() {
+        guard let action = pendingContactAction else {
+            return
+        }
+        pendingContactAction = nil
+
+        switch action {
+        case .call(let rawNumber):
+            let number = contacts.normalizedHandle(
+                for: rawNumber
+            )
+            guard !number.isEmpty else {
+                return
+            }
+
+            callScreenMinimized = false
+            callKit.startOutgoing(number: number)
+
+        case .message(let rawNumber):
+            let normalized = contacts.normalizedHandle(
+                for: rawNumber
+            )
+            let recipient = normalized.isEmpty
+                ? rawNumber.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                : normalized
+            guard !recipient.isEmpty else {
+                return
+            }
+
+            selectedTab = .messages
+            sms.requestCompose(to: recipient)
+        }
     }
 }
 
